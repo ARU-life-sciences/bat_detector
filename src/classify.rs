@@ -1,20 +1,23 @@
 use crate::features::CallFeatures;
 
 /// British bat key (Cornes, Bedfordshire Bat Group, 2008).
-/// Returns `(species name, diagnostic notes)`.
-pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
+/// Returns `(six-letter code, species name, diagnostic notes)`.
+pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'static str) {
     // ── Steps 1–2: Horseshoe bats (narrowband CF) ─────────────────────────────
     if f.is_cf {
         return match f.peak_hz as u32 {
             78_000..=87_000 => (
+                "RHIFER",
                 "Greater Horseshoe Bat (Rhinolophus ferrumequinum)",
                 "CF ~83 kHz; narrowband; prolonged whistle up to 50 ms",
             ),
             104_000..=116_000 => (
+                "RHIHIP",
                 "Lesser Horseshoe Bat (Rhinolophus hipposideros)",
                 "CF ~110 kHz; narrowband; highly directional call",
             ),
             _ => (
+                "RHISPP",
                 "Horseshoe bat sp. (unresolved)",
                 "CF call confirmed but peak outside known British ranges",
             ),
@@ -33,6 +36,7 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
             // ── Step 5: Nathusius' vs Common / Soprano ────────────────────────
             if f.peak_hz < 40_000.0 || f.rep_rate < 8.0 {
                 return (
+                    "PIPNAT",
                     "Nathusius' Pipistrelle (Pipistrellus nathusii)",
                     "Peak <40 kHz; slow rep ~6-7/s; FM+CF call",
                 );
@@ -40,17 +44,20 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
             // ── Step 6: Soprano vs Common ─────────────────────────────────────
             if f.peak_hz >= 50_000.0 {
                 return (
+                    "PIPPYG",
                     "Soprano Pipistrelle (Pipistrellus pygmaeus)",
                     "Peak typically 52-55 kHz; medium-rapid rep >=10/s",
                 );
             }
             if f.peak_hz >= 43_000.0 {
                 return (
+                    "PIPPIP",
                     "Common Pipistrelle (Pipistrellus pipistrellus)",
                     "Peak typically 43-46 kHz; medium-rapid rep >=10/s",
                 );
             }
             return (
+                "PIPSPP",
                 "Common or Nathusius' Pipistrelle",
                 "Peak near 40-43 kHz boundary; habitat context needed",
             );
@@ -59,6 +66,7 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
         // ── Steps 7–8: Big bats ───────────────────────────────────────────────
         if f.peak_hz >= 27_000.0 {
             return (
+                "EPTSER",
                 "Serotine (Eptesicus serotinus)",
                 "Peak 27-35 kHz; medium rep ~10/s; drunken syncopated rhythm; \
                  NB: may be confused with Barbastelle, Brown Long-eared or Greater Mouse-eared",
@@ -66,11 +74,13 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
         }
         if f.freq_low_hz <= 21_000.0 {
             return (
+                "NYCNOC",
                 "Noctule (Nyctalus noctula)",
                 "Peak <=20 kHz in at least some calls; slow rep 3-6/s; chip-chop alternation",
             );
         }
         return (
+            "NYCLEI",
             "Leisler's Bat (Nyctalus leisleri)",
             "All calls above 21 kHz; slow-medium rep; less marked alternation than Noctule",
         );
@@ -82,6 +92,7 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
     let freq_range = f.freq_high_hz - f.freq_low_hz;
     if (31_000.0..=36_000.0).contains(&f.peak_hz) && freq_range < 18_000.0 {
         return (
+            "BARBAR",
             "Barbastelle (Barbastella barbastellus)",
             "Peak 32-34 kHz; narrow range 30-45 kHz; tock quality; \
              rapid knocking rhythm; two alternating peaks ~33 & ~41 kHz visible on sonogram",
@@ -92,11 +103,13 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
     if f.freq_high_hz > 90_000.0 {
         return if f.freq_low_hz < 30_000.0 {
             (
+                "MYONAT",
                 "Natterer's Bat (Myotis nattereri)",
                 "Audible above 90 kHz and below 30 kHz; rapid rep",
             )
         } else {
             (
+                "MYOBEC",
                 "Bechstein's Bat (Myotis bechsteinii)",
                 "Audible above 90 kHz but not below 30 kHz; medium rep 9-11/s",
             )
@@ -107,6 +120,7 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
     if f.freq_high_hz < 65_000.0 {
         if (45_000.0..=55_000.0).contains(&f.peak_hz) {
             return (
+                "PLEAUR",
                 "Brown Long-eared Bat (Plecotus auritus)",
                 "Peak 45-55 kHz; rapid rep; inaudible above 60 kHz; \
                  NB: may occasionally produce louder Serotine-like calls",
@@ -114,11 +128,13 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
         }
         if f.peak_hz < 40_000.0 {
             return (
+                "PLEAUS",
                 "Grey Long-eared Bat (Plecotus austriacus)",
                 "Peak <40 kHz; medium rep; rare in Britain",
             );
         }
         return (
+            "PLESPP",
             "Long-eared bat sp. (Plecotus sp.)",
             "Inaudible above 65 kHz",
         );
@@ -127,12 +143,14 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
     // Step 10: broadband FM — general Myotis
     if f.rep_rate > 10.0 {
         return (
-            "Myotis sp. — probably Daubenton's / Whiskered / Brandt's",
+            "MYOSPP",
+            "Myotis sp. (probably Daubenton's / Whiskered / Brandt's)",
             "Rapid rep >10/s; broadband FM; \
              Daubenton's confirmed by low (<15 cm) flight over water",
         );
     }
     (
+        "MYOSPP",
         "Myotis sp. (unresolved)",
         "Broadband FM; audible over wide range; visual confirmation needed",
     )
@@ -188,19 +206,19 @@ mod tests {
 
     #[test]
     fn greater_horseshoe() {
-        let (sp, _) = classify_british(&cf(83_000.0));
+        let (_, sp, _) = classify_british(&cf(83_000.0));
         assert!(sp.contains("Greater Horseshoe"), "{}", sp);
     }
 
     #[test]
     fn lesser_horseshoe() {
-        let (sp, _) = classify_british(&cf(110_000.0));
+        let (_, sp, _) = classify_british(&cf(110_000.0));
         assert!(sp.contains("Lesser Horseshoe"), "{}", sp);
     }
 
     #[test]
     fn horseshoe_unresolved() {
-        let (sp, _) = classify_british(&cf(60_000.0));
+        let (_, sp, _) = classify_british(&cf(60_000.0));
         assert!(sp.contains("unresolved"), "{}", sp);
     }
 
@@ -209,14 +227,14 @@ mod tests {
     #[test]
     fn soprano_pipistrelle() {
         let f = fm_cf(53_000.0, 40_000.0, 65_000.0, 12.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Soprano"), "{}", sp);
     }
 
     #[test]
     fn common_pipistrelle() {
         let f = fm_cf(45_000.0, 35_000.0, 60_000.0, 12.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Common Pipistrelle"), "{}", sp);
     }
 
@@ -224,7 +242,7 @@ mod tests {
     fn nathusius_low_peak() {
         // Peak < 40 kHz → Nathusius'
         let f = fm_cf(38_000.0, 28_000.0, 52_000.0, 7.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Nathusius"), "{}", sp);
     }
 
@@ -232,14 +250,14 @@ mod tests {
     fn nathusius_slow_rep() {
         // Peak in 40–50 kHz range but slow rep rate → Nathusius'
         let f = fm_cf(42_000.0, 30_000.0, 55_000.0, 6.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Nathusius"), "{}", sp);
     }
 
     #[test]
     fn serotine() {
         let f = fm_cf(30_000.0, 22_000.0, 45_000.0, 10.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Serotine"), "{}", sp);
     }
 
@@ -247,7 +265,7 @@ mod tests {
     fn noctule() {
         // freq_low ≤ 21 kHz → Noctule
         let f = fm_cf(20_000.0, 18_000.0, 32_000.0, 4.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Noctule"), "{}", sp);
     }
 
@@ -255,7 +273,7 @@ mod tests {
     fn leisleri() {
         // Peak < 27 kHz, freq_low > 21 kHz, has CF tail → Leisler's
         let f = fm_cf(25_000.0, 22_000.0, 35_000.0, 5.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Leisler"), "{}", sp);
     }
 
@@ -265,7 +283,7 @@ mod tests {
     fn barbastelle() {
         // Peak 31–36 kHz, narrow range < 18 kHz
         let f = pure_fm(33_000.0, 28_000.0, 43_000.0, 10.0); // range = 15 kHz
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Barbastelle"), "{}", sp);
     }
 
@@ -273,7 +291,7 @@ mod tests {
     fn natterers() {
         // Audible above 90 kHz and below 30 kHz
         let f = pure_fm(50_000.0, 20_000.0, 95_000.0, 12.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Natterer"), "{}", sp);
     }
 
@@ -281,7 +299,7 @@ mod tests {
     fn bechsteins() {
         // Audible above 90 kHz but NOT below 30 kHz
         let f = pure_fm(55_000.0, 35_000.0, 95_000.0, 10.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Bechstein"), "{}", sp);
     }
 
@@ -289,7 +307,7 @@ mod tests {
     fn brown_long_eared() {
         // freq_high < 65 kHz, peak 45–55 kHz
         let f = pure_fm(50_000.0, 35_000.0, 62_000.0, 12.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Brown Long-eared"), "{}", sp);
     }
 
@@ -297,7 +315,7 @@ mod tests {
     fn grey_long_eared() {
         // freq_high < 65 kHz, peak < 40 kHz
         let f = pure_fm(35_000.0, 25_000.0, 60_000.0, 8.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Grey Long-eared"), "{}", sp);
     }
 
@@ -305,7 +323,7 @@ mod tests {
     fn myotis_rapid() {
         // Broadband FM, rep > 10/s → probably Daubenton's etc.
         let f = pure_fm(45_000.0, 25_000.0, 80_000.0, 15.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Daubenton"), "{}", sp);
     }
 
@@ -313,7 +331,7 @@ mod tests {
     fn myotis_unresolved() {
         // Broadband FM, rep ≤ 10/s → unresolved Myotis
         let f = pure_fm(45_000.0, 25_000.0, 80_000.0, 8.0);
-        let (sp, _) = classify_british(&f);
+        let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("unresolved"), "{}", sp);
     }
 }

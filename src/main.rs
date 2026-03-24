@@ -125,8 +125,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let peaks: Vec<PeakInfo> = all_features
             .into_iter()
             .map(|f| {
-                let (species, notes) = classify::classify_british(&f);
-                PeakInfo { features: f, species, notes }
+                let (code, species, notes) = classify::classify_british(&f);
+                PeakInfo { features: f, code, species, notes }
             })
             .collect();
 
@@ -212,6 +212,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // ── Per-pass energy (dB re FFT² units, comparable across files) ──────────
+    for pass in &mut passes {
+        let win_start = (pass.start_sec * sample_rate / WINDOW_SIZE as f32) as usize;
+        let win_end   = ((pass.end_sec   * sample_rate / WINDOW_SIZE as f32) as usize)
+            .min(n_windows - 1);
+        let mut energy_sum = 0.0f32;
+        let mut peak_energy = 0.0f32;
+        let mut n_det = 0usize;
+        for w in win_start..=win_end {
+            if detected[w] {
+                let e = spectrogram[w][bin_low..=bin_high].iter().sum::<f32>()
+                    / (bin_high - bin_low + 1) as f32;
+                energy_sum += e;
+                if e > peak_energy { peak_energy = e; }
+                n_det += 1;
+            }
+        }
+        if n_det > 0 {
+            let mean_e = energy_sum / n_det as f32;
+            pass.mean_energy_db = if mean_e > 0.0 { 10.0 * mean_e.log10() } else { -120.0 };
+            pass.peak_energy_db = if peak_energy > 0.0 { 10.0 * peak_energy.log10() } else { -120.0 };
+        }
+    }
+
     // ── Print pass summary ────────────────────────────────────────────────────
     for (i, pass) in passes.iter().enumerate() {
         let extra = if pass.n_extra > 0 {
@@ -221,12 +245,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         let flag = if pass.dubious { " [dubious: nested]" } else { "" };
         println!(
-            "{}: pass {} {:.1}–{:.1}s ({} pulse{}{}) → {}{}",
+            "{}: pass {} {:.1}–{:.1}s ({} pulse{}{}) → {} - {}{}",
             path, i + 1,
             pass.start_sec, pass.end_sec,
             pass.n_pulses,
             if pass.n_pulses == 1 { "" } else { "s" },
             extra,
+            pass.code,
             pass.species,
             flag,
         );
@@ -254,6 +279,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     // ── Outputs ───────────────────────────────────────────────────────────────
+    output::write_csv(stem, path, &passes)
+        .map_err(|e| format!("Failed to write CSV for '{}': {}", stem, e))?;
+
     output::write_png(stem, &spec_bytes, &grouped_detected, n_windows, freq_bins, bin_low, bin_high)
         .map_err(|e| format!("Failed to write PNG for '{}': {}", stem, e))?;
 

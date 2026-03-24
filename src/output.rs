@@ -28,6 +28,7 @@ pub fn colormap(t: f32) -> [u8; 3] {
 
 pub struct PeakInfo {
     pub features: CallFeatures,
+    pub code: &'static str,
     pub species: &'static str,
     pub notes: &'static str,
 }
@@ -55,68 +56,219 @@ pub struct PassInfo {
     /// Additional sub-threshold pulses found by the local search (single-pulse passes only).
     pub n_extra: usize,
     pub mean_peak_hz: f32,
+    pub mean_freq_low_hz: f32,
+    pub mean_freq_high_hz: f32,
+    pub mean_bandwidth_hz: f32,
+    pub mean_cf_tail_ratio: f32,
+    pub mean_rep_rate: f32,
+    pub is_cf: bool,
+    /// Mean bat-band power (dB, linear FFT²) over detected windows — filled after construction.
+    pub mean_energy_db: f32,
+    /// Peak bat-band power (dB) across detected windows — filled after construction.
+    pub peak_energy_db: f32,
+    /// Six-letter species code (e.g. "PIPPYG").
+    pub code: &'static str,
+    /// Diagnostic notes from the classifier (same for all pulses of a given species).
+    pub notes: &'static str,
     /// True when this single-pulse pass is entirely nested within a larger pass of a
     /// different species, making the identification unreliable.
     pub dubious: bool,
 }
 
+// Per-call sample collected during pass accumulation.
+struct PassSample {
+    start: f32, end: f32,
+    peak_hz: f32, freq_low_hz: f32, freq_high_hz: f32,
+    bandwidth_hz: f32, cf_tail_ratio: f32, rep_rate: f32, is_cf: bool,
+    code: &'static str,
+    notes: &'static str,
+}
+
 /// Group call groups into species passes.  Calls of the same species separated
 /// by ≤ `max_gap_sec` are merged; different species are always kept separate.
 pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo> {
-    let mut by_species: std::collections::HashMap<&'static str, Vec<(f32, f32, f32)>> =
+    let mut by_species: std::collections::HashMap<&'static str, Vec<PassSample>> =
         std::collections::HashMap::new();
 
     for call in calls {
         for peak in &call.peaks {
-            by_species
-                .entry(peak.species)
-                .or_default()
-                .push((call.start_sec, call.end_sec, peak.features.peak_hz));
+            by_species.entry(peak.species).or_default().push(PassSample {
+                start: call.start_sec,
+                end: call.end_sec,
+                peak_hz: peak.features.peak_hz,
+                freq_low_hz: peak.features.freq_low_hz,
+                freq_high_hz: peak.features.freq_high_hz,
+                bandwidth_hz: peak.features.bandwidth_hz,
+                cf_tail_ratio: peak.features.cf_tail_ratio,
+                rep_rate: peak.features.rep_rate,
+                is_cf: peak.features.is_cf,
+                code: peak.code,
+                notes: peak.notes,
+            });
         }
     }
 
     let mut passes: Vec<PassInfo> = Vec::new();
 
     for (species, mut items) in by_species {
-        items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        let (mut cur_start, mut cur_end, first_hz) = items[0];
-        let mut hz_sum = first_hz;
-        let mut count = 1usize;
+        items.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
 
-        for &(start, end, peak_hz) in &items[1..] {
-            if start - cur_end <= max_gap_sec {
-                if end > cur_end { cur_end = end; }
-                hz_sum += peak_hz;
-                count += 1;
-            } else {
+        // Running accumulators for the current pass group.
+        // Notes are constant per species — carry the first sample's value.
+        macro_rules! flush {
+            ($cs:expr, $ce:expr, $sums:expr, $n:expr, $code:expr, $notes:expr) => {{
+                let n = $n as f32;
                 passes.push(PassInfo {
                     species,
-                    start_sec: cur_start,
-                    end_sec: cur_end,
-                    n_pulses: count,
+                    start_sec: $cs,
+                    end_sec: $ce,
+                    n_pulses: $n,
                     n_extra: 0,
-                    mean_peak_hz: hz_sum / count as f32,
+                    mean_peak_hz:      $sums.0 / n,
+                    mean_freq_low_hz:  $sums.1 / n,
+                    mean_freq_high_hz: $sums.2 / n,
+                    mean_bandwidth_hz: $sums.3 / n,
+                    mean_cf_tail_ratio:$sums.4 / n,
+                    mean_rep_rate:     $sums.5 / n,
+                    is_cf:             $sums.6,
+                    mean_energy_db: 0.0,
+                    peak_energy_db: 0.0,
+                    code: $code,
+                    notes: $notes,
                     dubious: false,
                 });
-                cur_start = start;
-                cur_end = end;
-                hz_sum = peak_hz;
+            }};
+        }
+
+        let s0 = &items[0];
+        let mut cur_start = s0.start;
+        let mut cur_end   = s0.end;
+        let mut cur_code  = s0.code;
+        let mut cur_notes = s0.notes;
+        // sums: (peak_hz, freq_low, freq_high, bandwidth, cf_tail_ratio, rep_rate, any_cf)
+        let mut sums = (s0.peak_hz, s0.freq_low_hz, s0.freq_high_hz,
+                        s0.bandwidth_hz, s0.cf_tail_ratio, s0.rep_rate, s0.is_cf);
+        let mut count = 1usize;
+
+        for s in &items[1..] {
+            if s.start - cur_end <= max_gap_sec {
+                if s.end > cur_end { cur_end = s.end; }
+                sums.0 += s.peak_hz;
+                sums.1 += s.freq_low_hz;
+                sums.2 += s.freq_high_hz;
+                sums.3 += s.bandwidth_hz;
+                sums.4 += s.cf_tail_ratio;
+                sums.5 += s.rep_rate;
+                sums.6 |= s.is_cf;
+                count += 1;
+            } else {
+                flush!(cur_start, cur_end, sums, count, cur_code, cur_notes);
+                cur_start = s.start;
+                cur_end   = s.end;
+                cur_code  = s.code;
+                cur_notes = s.notes;
+                sums = (s.peak_hz, s.freq_low_hz, s.freq_high_hz,
+                        s.bandwidth_hz, s.cf_tail_ratio, s.rep_rate, s.is_cf);
                 count = 1;
             }
         }
-        passes.push(PassInfo {
-            species,
-            start_sec: cur_start,
-            end_sec: cur_end,
-            n_pulses: count,
-            n_extra: 0,
-            mean_peak_hz: hz_sum / count as f32,
-            dubious: false,
-        });
+        flush!(cur_start, cur_end, sums, count, cur_code, cur_notes);
     }
 
     passes.sort_by(|a, b| a.start_sec.partial_cmp(&b.start_sec).unwrap());
     passes
+}
+
+// ── CSV output ────────────────────────────────────────────────────────────────
+
+/// Try to extract ISO date and time strings from a file path like
+/// `data/20260322_190000.WAV` → (`"2026-03-22"`, `"19:00:00"`).
+/// Matches the pattern `YYYYMMDD_HHMMSS` anywhere in the filename stem.
+/// Returns empty strings when the pattern is not found.
+fn parse_stem_datetime(path: &str) -> (String, String) {
+    // Get the filename component, strip any extension.
+    let name = path.rsplit('/').next().unwrap_or(path)
+                   .rsplit('\\').next().unwrap_or(path);
+    let base = name.rsplit('.').nth(1).map(|_| {
+        // has a dot — drop everything from the last dot
+        &name[..name.rfind('.').unwrap()]
+    }).unwrap_or(name);
+
+    // Search for YYYYMMDD_HHMMSS anywhere in the base name.
+    for i in 0..base.len().saturating_sub(14) {
+        let s = &base[i..i + 15];
+        let b = s.as_bytes();
+        if b[..8].iter().all(|c| c.is_ascii_digit())
+            && b[8] == b'_'
+            && b[9..].iter().all(|c| c.is_ascii_digit())
+        {
+            let date = format!("{}-{}-{}", &s[0..4], &s[4..6], &s[6..8]);
+            let time = format!("{}:{}:{}", &s[9..11], &s[11..13], &s[13..15]);
+            return (date, time);
+        }
+    }
+    (String::new(), String::new())
+}
+
+/// Write a CSV with one row per species pass.
+///
+/// Columns: filename, date, time, pass, start_s, end_s, duration_ms,
+///          n_pulses, n_extra, mean_peak_khz, freq_low_khz, freq_high_khz,
+///          bandwidth_khz, cf_tail_ratio, rep_rate_hz, is_cf,
+///          mean_energy_db, peak_energy_db, species, dubious
+pub fn write_csv(
+    stem: &str,
+    path: &str,
+    passes: &[PassInfo],
+) -> std::io::Result<()> {
+    let out_path = format!("{}_detections.csv", stem);
+    let file = std::fs::File::create(&out_path)?;
+    let mut w = std::io::BufWriter::new(file);
+
+    let (date, time) = parse_stem_datetime(path);
+    let filename = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path);
+
+    writeln!(
+        w,
+        "filename,date,time,pass,start_s,end_s,duration_ms,\
+         n_pulses,n_extra,mean_peak_khz,freq_low_khz,freq_high_khz,\
+         bandwidth_khz,cf_tail_ratio,rep_rate_hz,is_cf,\
+         mean_energy_db,peak_energy_db,code,species,notes,dubious"
+    )?;
+
+    for (i, p) in passes.iter().enumerate() {
+        // Species and notes can contain commas — wrap in double quotes.
+        let species_quoted = format!("\"{}\"", p.species.replace('"', "\"\""));
+        let notes_quoted   = format!("\"{}\"", p.notes.replace('"', "\"\""));
+        writeln!(
+            w,
+            "{},{},{},{},{:.3},{:.3},{:.0},{},{},{:.3},{:.3},{:.3},{:.3},{:.4},{:.2},{},{:.2},{:.2},{},{},{},{}",
+            filename,
+            date, time,
+            i + 1,
+            p.start_sec, p.end_sec,
+            (p.end_sec - p.start_sec) * 1000.0,
+            p.n_pulses, p.n_extra,
+            p.mean_peak_hz      / 1000.0,
+            p.mean_freq_low_hz  / 1000.0,
+            p.mean_freq_high_hz / 1000.0,
+            p.mean_bandwidth_hz / 1000.0,
+            p.mean_cf_tail_ratio,
+            p.mean_rep_rate,
+            p.is_cf,
+            p.mean_energy_db, p.peak_energy_db,
+            p.code,
+            species_quoted,
+            notes_quoted,
+            p.dubious,
+        )?;
+    }
+
+    println!("Detection CSV saved to:     {}", out_path);
+    Ok(())
 }
 
 // ── PNG output ────────────────────────────────────────────────────────────────
@@ -219,6 +371,9 @@ const CMAP=(function(){
 })();
 const cv=document.getElementById('cv');
 const ct=cv.getContext('2d');
+// Offscreen canvas caches the clean render so mousemove only copies + overlays.
+const ov=document.createElement('canvas');
+const oc=ov.getContext('2d');
 const MH=10,AH=24,FAW=56;
 let view={x0:0,x1:D.nW,y0:0,y1:D.nB};
 function vW(){return cv.width-FAW;}
@@ -264,6 +419,8 @@ function render(){
     ct.setLineDash([]);
   });
   drawFreqAxis(w,h);drawTimeAxis(w,h);
+  // Cache clean state for crosshair overlay
+  oc.drawImage(cv,0,0);
 }
 function drawFreqAxis(w,h){
   ct.fillStyle='#111';ct.fillRect(0,MH,FAW,h);
@@ -305,6 +462,7 @@ function drawTimeAxis(w,h){
 function resize(){
   cv.width=Math.max(800,document.documentElement.clientWidth-2);
   cv.height=Math.max(400,Math.floor(window.innerHeight*0.62));
+  ov.width=cv.width;ov.height=cv.height;
   render();
 }
 cv.addEventListener('wheel',function(e){
@@ -341,11 +499,42 @@ window.addEventListener('mousemove',function(e){
   if(col>=0&&col<w&&row>=0&&row<h){
     const wi=Math.min(D.nW-1,Math.max(0,Math.floor(view.x0+col/w*(view.x1-view.x0))));
     const bi=Math.min(D.nB-1,Math.max(0,Math.floor(view.y0+(h-1-row)/h*(view.y1-view.y0))));
+    const tsec=wi*D.ws/D.sr;
+    const fkhz=bi*D.hpb/1000;
+    const bv=D.bytes[wi*D.nB+bi];
+    const db=bv>0?(bv/255*80-80).toFixed(1):'\u221280';
+    // Find species/code for this time position
+    let sp='',co='';
+    for(const p of D.passes){if(tsec>=p.t0&&tsec<=p.t1){sp=p.sp;co=p.co;break;}}
     document.getElementById('info').textContent=
-      't = '+(wi*D.ws/D.sr).toFixed(3)+' s   |   f = '+(bi*D.hpb/1000).toFixed(2)+' kHz';
+      't = '+tsec.toFixed(3)+' s\u2003|\u2003f = '+fkhz.toFixed(2)+' kHz\u2003|\u2003'+db+' dB'+(sp?'\u2003|\u2003'+co+' \u00b7 '+sp:'');
+    if(!drag){
+      // Restore clean frame, then draw crosshair
+      ct.drawImage(ov,0,0);
+      ct.strokeStyle='rgba(255,255,255,0.5)';ct.lineWidth=1;ct.setLineDash([3,3]);
+      ct.beginPath();ct.moveTo(FAW+col,0);ct.lineTo(FAW+col,MH+h);ct.stroke();
+      ct.beginPath();ct.moveTo(FAW,MH+row);ct.lineTo(FAW+w,MH+row);ct.stroke();
+      ct.setLineDash([]);
+      // Species label bubble near the cursor: "CODE · Name"
+      if(sp){
+        const label=co+' \u00b7 '+sp;
+        ct.font='11px monospace';
+        const tw=ct.measureText(label).width;
+        const bx=Math.min(FAW+col+14,FAW+w-tw-10);
+        const by=Math.max(MH+row-10,MH+15);
+        ct.fillStyle='rgba(0,0,20,0.78)';
+        ct.fillRect(bx-4,by-13,tw+8,17);
+        ct.fillStyle='#ffdd88';ct.textAlign='left';
+        ct.fillText(label,bx,by);
+      }
+    }
+  }else{
+    if(!drag)ct.drawImage(ov,0,0);
+    document.getElementById('info').innerHTML='&nbsp;';
   }
 });
 window.addEventListener('mouseup',()=>drag=null);
+cv.addEventListener('mouseleave',()=>{if(!drag)ct.drawImage(ov,0,0);});
 cv.addEventListener('dblclick',()=>{view={x0:0,x1:D.nW,y0:0,y1:D.nB};render();});
 document.querySelectorAll('tr[data-t0]').forEach(tr=>{
   tr.addEventListener('click',function(){
@@ -385,6 +574,22 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Wrap `s` in a JS double-quoted string literal, escaping backslashes and quotes.
+fn js_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 // ── HTML writer ───────────────────────────────────────────────────────────────
@@ -446,7 +651,7 @@ pub fn write_html(
     w.write_all(
         b"<table><thead><tr>\
           <th>#</th><th>Time</th><th>Duration</th>\
-          <th>Pulses</th><th>Mean peak</th><th>Species</th>\
+          <th>Pulses</th><th>Mean peak</th><th>Code</th><th>Species</th>\
           </tr></thead><tbody>\n",
     )?;
 
@@ -477,6 +682,7 @@ pub fn write_html(
              <td>{:.0}ms</td>\
              <td>{}</td>\
              <td>{:.1}kHz</td>\
+             <td><code style=\"color:#adf\">{}</code></td>\
              <td>{}</td>\
              </tr>\n",
             pass.start_sec, pass.end_sec,
@@ -486,6 +692,7 @@ pub fn write_html(
             duration_ms,
             pulses_cell,
             pass.mean_peak_hz / 1000.0,
+            pass.code,
             species_cell,
         )?;
     }
@@ -513,6 +720,16 @@ pub fn write_html(
     for (i, call) in calls.iter().enumerate() {
         if i > 0 { w.write_all(b",")?; }
         write!(w, r#"{{"s":{},"e":{}}}"#, call.start_win, call.end_win)?;
+    }
+    w.write_all(b"];\n")?;
+
+    // Passes array — time range + code + species name, used for mouse-over labels
+    w.write_all(b"D.passes=[")?;
+    for (i, pass) in passes.iter().enumerate() {
+        if i > 0 { w.write_all(b",")?; }
+        write!(w, r#"{{"t0":{:.3},"t1":{:.3},"co":{},"sp":{}}}"#,
+            pass.start_sec, pass.end_sec,
+            js_str(pass.code), js_str(pass.species))?;
     }
     w.write_all(b"];\n")?;
 
