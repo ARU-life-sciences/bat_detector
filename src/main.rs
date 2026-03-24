@@ -13,6 +13,14 @@ const ID_FREQ_LOW_HZ: f32 = 18_000.0;
 const ENERGY_THRESHOLD: f32 = 1.08;
 const WINDOW_SIZE: usize = 1024;
 const GAP_FILL: usize = 25;
+/// Maximum gap (seconds) between consecutive same-species groups to merge into one pass.
+const PASS_GAP: f32 = 2.0;
+/// Half-width of the search window (seconds) around a single-pulse detection.
+const SEARCH_SECS: f32 = 1.0;
+/// Half-width of the frequency band (Hz) used in the local pulse search.
+const SEARCH_BAND_HZ: f32 = 5_000.0;
+/// Secondary detection threshold as a fraction of the detected pulse's band energy.
+const LOCAL_SEARCH_THRESH: f32 = 0.3;
 
 fn main() {
     if let Err(e) = run() {
@@ -125,17 +133,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let start_sec = start as f32 * WINDOW_SIZE as f32 / sample_rate;
         let end_sec = (end + 1) as f32 * WINDOW_SIZE as f32 / sample_rate;
 
-        for p in &peaks {
-            println!(
-                "{}: group {} {:.3}–{:.3}s → {}",
-                path,
-                calls.len() + 1,
-                start_sec,
-                end_sec,
-                p.species
-            );
-        }
-
         calls.push(CallGroupInfo {
             start_win: start,
             end_win: end,
@@ -144,6 +141,95 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             duration_ms: (end_sec - start_sec) * 1000.0,
             peaks,
         });
+    }
+
+    // ── Aggregate into species passes ─────────────────────────────────────────
+    let mut passes = output::compute_passes(&calls, PASS_GAP);
+
+    // ── Mark dubious: single-pulse passes nested inside a larger pass ─────────
+    // A pass is dubious when it falls entirely within another pass that has more
+    // pulses (i.e. is more reliable).  This catches single-pulse mis-identifications
+    // produced by, e.g., one ambiguous frame inside an ongoing pipistrelle sequence.
+    let n_passes = passes.len();
+    for i in 0..n_passes {
+        if passes[i].n_pulses != 1 { continue; }
+        for j in 0..n_passes {
+            if i == j { continue; }
+            let (pi_s, pi_e) = (passes[i].start_sec, passes[i].end_sec);
+            let (pj_s, pj_e, pj_n) = (passes[j].start_sec, passes[j].end_sec, passes[j].n_pulses);
+            if pj_n > 1 && pi_s >= pj_s - 0.1 && pi_e <= pj_e + 0.1 {
+                passes[i].dubious = true;
+                break;
+            }
+        }
+    }
+
+    // ── Local search: look for sub-threshold pulses near single-pulse passes ──
+    // For each non-dubious single-pulse pass, scan ±SEARCH_SECS in the spectrogram
+    // at the pass's characteristic frequency.  Any additional pulses found at
+    // ≥ LOCAL_SEARCH_THRESH × detected_energy are counted in n_extra, giving the
+    // table a richer picture of how isolated the detection really is.
+    for i in 0..passes.len() {
+        if passes[i].n_pulses != 1 || passes[i].dubious { continue; }
+        let peak_hz   = passes[i].mean_peak_hz;
+        let pass_spe  = passes[i].species;
+        let pass_s    = passes[i].start_sec;
+        let pass_e    = passes[i].end_sec;
+
+        // Find the originating call group
+        let Some(call) = calls.iter().find(|c| {
+            c.peaks.iter().any(|p| p.species == pass_spe)
+                && c.start_sec <= pass_e + 0.1
+                && c.end_sec   >= pass_s - 0.1
+        }) else { continue };
+
+        // Mean band energy over detected windows in the call group
+        let band_lo = ((peak_hz - SEARCH_BAND_HZ).max(0.0) / hz_per_bin) as usize;
+        let band_hi = (((peak_hz + SEARCH_BAND_HZ) / hz_per_bin).round() as usize)
+            .min(freq_bins - 1);
+        let n_band = (band_hi - band_lo + 1) as f32;
+        let mut energy_sum = 0.0f32;
+        let mut n_det = 0usize;
+        for w in call.start_win..=call.end_win {
+            if detected[w] {
+                energy_sum += spectrogram[w][band_lo..=band_hi].iter().sum::<f32>() / n_band;
+                n_det += 1;
+            }
+        }
+        if n_det == 0 { continue; }
+        let det_energy = energy_sum / n_det as f32;
+
+        let search_wins = (SEARCH_SECS * sample_rate / WINDOW_SIZE as f32) as usize;
+        let lo_win = call.start_win.saturating_sub(search_wins);
+        let hi_win = (call.end_win + search_wins).min(n_windows - 1);
+
+        passes[i].n_extra = detection::targeted_pulse_count(
+            &spectrogram,
+            lo_win, hi_win,
+            call.start_win, call.end_win,
+            peak_hz, hz_per_bin, SEARCH_BAND_HZ,
+            det_energy, LOCAL_SEARCH_THRESH,
+        );
+    }
+
+    // ── Print pass summary ────────────────────────────────────────────────────
+    for (i, pass) in passes.iter().enumerate() {
+        let extra = if pass.n_extra > 0 {
+            format!(", +{} nearby", pass.n_extra)
+        } else {
+            String::new()
+        };
+        let flag = if pass.dubious { " [dubious: nested]" } else { "" };
+        println!(
+            "{}: pass {} {:.1}–{:.1}s ({} pulse{}{}) → {}{}",
+            path, i + 1,
+            pass.start_sec, pass.end_sec,
+            pass.n_pulses,
+            if pass.n_pulses == 1 { "" } else { "s" },
+            extra,
+            pass.species,
+            flag,
+        );
     }
 
     // ── dB normalisation → spec_bytes ─────────────────────────────────────────
@@ -181,6 +267,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &spec_bytes,
         &grouped_detected,
         &calls,
+        &passes,
     )
     .map_err(|e| format!("Failed to write HTML for '{}': {}", stem, e))?;
 

@@ -85,6 +85,54 @@ pub fn group_calls(detected: &[bool], gap_fill: usize) -> Vec<(usize, usize)> {
     merged
 }
 
+/// Count distinct pulses in a narrow frequency band around `peak_hz` within
+/// windows `lo_win..=hi_win`, excluding the original group `exclude_lo..=exclude_hi`.
+///
+/// A "pulse" is a run of consecutive windows whose mean band energy exceeds
+/// `detected_energy * rel_thresh`.  Calibrating to `detected_energy` makes the
+/// search self-scaling: if the original pulse was weak the bar is low; if it was
+/// loud nearby calls must also be loud to count.
+pub fn targeted_pulse_count(
+    spectrogram: &[Vec<f32>],
+    lo_win: usize,
+    hi_win: usize,
+    exclude_lo: usize,
+    exclude_hi: usize,
+    peak_hz: f32,
+    hz_per_bin: f32,
+    band_hz: f32,
+    detected_energy: f32,
+    rel_thresh: f32,
+) -> usize {
+    if spectrogram.is_empty() || detected_energy <= 0.0 { return 0; }
+    let n_bins = spectrogram[0].len();
+    let band_lo = ((peak_hz - band_hz).max(0.0) / hz_per_bin) as usize;
+    let band_hi = (((peak_hz + band_hz) / hz_per_bin).round() as usize).min(n_bins.saturating_sub(1));
+    if band_lo > band_hi { return 0; }
+    let n_band = (band_hi - band_lo + 1) as f32;
+    let threshold = detected_energy * rel_thresh;
+
+    let mut n_pulses = 0usize;
+    let mut in_pulse = false;
+
+    for w in lo_win..=hi_win {
+        if w >= exclude_lo && w <= exclude_hi {
+            in_pulse = false;
+            continue;
+        }
+        let energy = spectrogram[w][band_lo..=band_hi].iter().sum::<f32>() / n_band;
+        if energy > threshold {
+            if !in_pulse {
+                n_pulses += 1;
+                in_pulse = true;
+            }
+        } else {
+            in_pulse = false;
+        }
+    }
+    n_pulses
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

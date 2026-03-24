@@ -42,6 +42,83 @@ pub struct CallGroupInfo {
     pub peaks: Vec<PeakInfo>,
 }
 
+// ── Species-pass aggregation ──────────────────────────────────────────────────
+
+/// One "pass" = all consecutive call groups of the same species within
+/// `max_gap_sec` of each other.  When two species overlap in time they each
+/// get their own PassInfo, giving one table row per species per pass.
+pub struct PassInfo {
+    pub species: &'static str,
+    pub start_sec: f32,
+    pub end_sec: f32,
+    pub n_pulses: usize,
+    /// Additional sub-threshold pulses found by the local search (single-pulse passes only).
+    pub n_extra: usize,
+    pub mean_peak_hz: f32,
+    /// True when this single-pulse pass is entirely nested within a larger pass of a
+    /// different species, making the identification unreliable.
+    pub dubious: bool,
+}
+
+/// Group call groups into species passes.  Calls of the same species separated
+/// by ≤ `max_gap_sec` are merged; different species are always kept separate.
+pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo> {
+    let mut by_species: std::collections::HashMap<&'static str, Vec<(f32, f32, f32)>> =
+        std::collections::HashMap::new();
+
+    for call in calls {
+        for peak in &call.peaks {
+            by_species
+                .entry(peak.species)
+                .or_default()
+                .push((call.start_sec, call.end_sec, peak.features.peak_hz));
+        }
+    }
+
+    let mut passes: Vec<PassInfo> = Vec::new();
+
+    for (species, mut items) in by_species {
+        items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let (mut cur_start, mut cur_end, first_hz) = items[0];
+        let mut hz_sum = first_hz;
+        let mut count = 1usize;
+
+        for &(start, end, peak_hz) in &items[1..] {
+            if start - cur_end <= max_gap_sec {
+                if end > cur_end { cur_end = end; }
+                hz_sum += peak_hz;
+                count += 1;
+            } else {
+                passes.push(PassInfo {
+                    species,
+                    start_sec: cur_start,
+                    end_sec: cur_end,
+                    n_pulses: count,
+                    n_extra: 0,
+                    mean_peak_hz: hz_sum / count as f32,
+                    dubious: false,
+                });
+                cur_start = start;
+                cur_end = end;
+                hz_sum = peak_hz;
+                count = 1;
+            }
+        }
+        passes.push(PassInfo {
+            species,
+            start_sec: cur_start,
+            end_sec: cur_end,
+            n_pulses: count,
+            n_extra: 0,
+            mean_peak_hz: hz_sum / count as f32,
+            dubious: false,
+        });
+    }
+
+    passes.sort_by(|a, b| a.start_sec.partial_cmp(&b.start_sec).unwrap());
+    passes
+}
+
 // ── PNG output ────────────────────────────────────────────────────────────────
 
 /// Write a spectrogram PNG.
@@ -117,8 +194,10 @@ table{border-collapse:collapse;font-size:12px;width:100%}
 th,td{padding:3px 14px 3px 0;text-align:left;vertical-align:top}
 th{color:#555;font-weight:normal;border-bottom:1px solid #222;padding-bottom:5px}
 .group-first td{border-top:1px solid #2a2a40}
-tr[data-s]{cursor:pointer}
-tr[data-s]:hover td{background:#1a1a3a;color:#eee}
+tr[data-t0]{cursor:pointer}
+tr[data-t0]:hover td{background:#1a1a3a;color:#eee}
+tr.dubious{opacity:0.4}
+tr.dubious:hover{opacity:1}
 .cf{display:inline-block;padding:1px 5px;border-radius:2px;font-size:10px;background:#1a4;color:#afa}
 .fm{display:inline-block;padding:1px 5px;border-radius:2px;font-size:10px;background:#148;color:#adf}
 </style>
@@ -268,9 +347,10 @@ window.addEventListener('mousemove',function(e){
 });
 window.addEventListener('mouseup',()=>drag=null);
 cv.addEventListener('dblclick',()=>{view={x0:0,x1:D.nW,y0:0,y1:D.nB};render();});
-document.querySelectorAll('tr[data-s]').forEach(tr=>{
+document.querySelectorAll('tr[data-t0]').forEach(tr=>{
   tr.addEventListener('click',function(){
-    const s=+this.dataset.s,e=+this.dataset.e;
+    const t0=+this.dataset.t0,t1=+this.dataset.t1;
+    const s=t0*D.sr/D.ws,e=t1*D.sr/D.ws;
     const pad=Math.max(5,(e-s)*0.1)|0;
     view.x0=Math.max(0,s-pad);view.x1=Math.min(D.nW,e+pad);
     render();cv.scrollIntoView({behavior:'smooth'});
@@ -322,13 +402,14 @@ pub fn write_html(
     spec_bytes: &[u8],
     detected: &[bool],
     calls: &[CallGroupInfo],
+    passes: &[PassInfo],
 ) -> std::io::Result<()> {
     let out_path = format!("{}_spectrogram.html", stem);
     let file = std::fs::File::create(&out_path)?;
     let mut w = std::io::BufWriter::new(file);
 
     let duration_sec = n_windows as f32 * window_size as f32 / sample_rate;
-    let n_species: usize = calls.iter().map(|c| c.peaks.len()).sum();
+    let n_pulses: usize = calls.iter().map(|c| c.peaks.len()).sum();
 
     // ── Head ─────────────────────────────────────────────────────────────────
     w.write_all(b"<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n")?;
@@ -343,74 +424,70 @@ pub fn write_html(
         "<p class=\"meta\">Sample rate: {} Hz &nbsp;|&nbsp; \
          Duration: {:.1} s &nbsp;|&nbsp; \
          {} windows ({}-point FFT) &nbsp;|&nbsp; \
-         {} call group(s), {} species detection(s)</p>\n",
+         {} pulse(s) &rarr; {} pass(es)</p>\n",
         sample_rate as u32, duration_sec, n_windows, window_size,
-        calls.len(), n_species,
+        n_pulses, passes.len(),
     )?;
     w.write_all(
         b"<p class=\"help\">Scroll: zoom time &nbsp;|&nbsp; \
           Shift+scroll: zoom frequency &nbsp;|&nbsp; \
           Drag: pan &nbsp;|&nbsp; \
           Double-click: reset view &nbsp;|&nbsp; \
-          Click call row to zoom</p>\n",
+          Click pass row to zoom</p>\n",
     )?;
 
     // ── Canvas ────────────────────────────────────────────────────────────────
     w.write_all(b"<div id=\"wrap\"><canvas id=\"cv\"></canvas></div>\n")?;
     w.write_all(b"<div id=\"info\">&nbsp;</div>\n")?;
 
-    // ── Call table ────────────────────────────────────────────────────────────
+    // ── Passes table ──────────────────────────────────────────────────────────
     w.write_all(b"<div id=\"calls\">\n")?;
-    w.write_all(b"<h2>Identified calls <span style=\"color:#555;font-size:11px\">(click to zoom)</span></h2>\n")?;
+    w.write_all(b"<h2>Species passes <span style=\"color:#555;font-size:11px\">(click to zoom)</span></h2>\n")?;
     w.write_all(
         b"<table><thead><tr>\
           <th>#</th><th>Time</th><th>Duration</th>\
-          <th>Peak freq</th><th>&minus;10dB BW</th><th>&minus;20dB range</th>\
-          <th>Type</th><th>Species</th>\
+          <th>Pulses</th><th>Mean peak</th><th>Species</th>\
           </tr></thead><tbody>\n",
     )?;
 
-    for (group_idx, call) in calls.iter().enumerate() {
-        for (peak_idx, peak) in call.peaks.iter().enumerate() {
-            let badge = if peak.features.is_cf {
-                r#"<span class="cf">CF</span>"#
-            } else {
-                r#"<span class="fm">FM</span>"#
-            };
-            // First peak of a group gets the call number and a visual separator;
-            // subsequent peaks leave those cells blank.
-            let call_num = if peak_idx == 0 {
-                format!("{}", group_idx + 1)
-            } else {
-                String::new()
-            };
-            let row_class = if peak_idx == 0 { "group-first" } else { "" };
-            write!(
-                w,
-                "<tr data-s=\"{}\" data-e=\"{}\" class=\"{}\" title=\"{}\">\
-                 <td>{}</td>\
-                 <td>{:.3}&ndash;{:.3}s</td>\
-                 <td>{:.0}ms</td>\
-                 <td>{:.1}kHz</td>\
-                 <td>{:.1}kHz</td>\
-                 <td>{:.0}&ndash;{:.0}kHz</td>\
-                 <td>{}</td>\
-                 <td>{}</td>\
-                 </tr>\n",
-                call.start_win, call.end_win,
-                row_class,
-                html_escape(peak.notes),
-                call_num,
-                call.start_sec, call.end_sec,
-                call.duration_ms,
-                peak.features.peak_hz / 1000.0,
-                peak.features.bandwidth_hz / 1000.0,
-                peak.features.freq_low_hz / 1000.0,
-                peak.features.freq_high_hz / 1000.0,
-                badge,
-                peak.species,
-            )?;
-        }
+    for (i, pass) in passes.iter().enumerate() {
+        let duration_ms = (pass.end_sec - pass.start_sec) * 1000.0;
+        let row_class = if pass.dubious { "dubious" } else { "" };
+        let pulses_cell = if pass.n_extra > 0 {
+            format!(
+                "{} <span style=\"color:#668;font-size:10px\">(+{}&nbsp;nearby)</span>",
+                pass.n_pulses, pass.n_extra
+            )
+        } else {
+            format!("{}", pass.n_pulses)
+        };
+        let species_cell = if pass.dubious {
+            format!(
+                "{} <span style=\"color:#555;font-size:10px\">(nested&nbsp;&#x2753;)</span>",
+                pass.species
+            )
+        } else {
+            pass.species.to_string()
+        };
+        write!(
+            w,
+            "<tr data-t0=\"{:.3}\" data-t1=\"{:.3}\" class=\"{}\">\
+             <td>{}</td>\
+             <td>{:.1}&ndash;{:.1}s</td>\
+             <td>{:.0}ms</td>\
+             <td>{}</td>\
+             <td>{:.1}kHz</td>\
+             <td>{}</td>\
+             </tr>\n",
+            pass.start_sec, pass.end_sec,
+            row_class,
+            i + 1,
+            pass.start_sec, pass.end_sec,
+            duration_ms,
+            pulses_cell,
+            pass.mean_peak_hz / 1000.0,
+            species_cell,
+        )?;
     }
     w.write_all(b"</tbody></table>\n</div>\n")?;
 
@@ -431,28 +508,11 @@ pub fn write_html(
     }
     w.write_all(b"];\n")?;
 
-    // Calls array — each call has a `peaks` sub-array for multi-species support
+    // Calls array — start/end windows, used only for boundary lines in the spectrogram
     w.write_all(b"D.calls=[")?;
     for (i, call) in calls.iter().enumerate() {
         if i > 0 { w.write_all(b",")?; }
-        write!(w, r#"{{"s":{},"e":{},"t0":{:.3},"t1":{:.3},"peaks":["#,
-               call.start_win, call.end_win, call.start_sec, call.end_sec)?;
-        for (j, peak) in call.peaks.iter().enumerate() {
-            if j > 0 { w.write_all(b",")?; }
-            let f = &peak.features;
-            let sp = peak.species.replace('"', "'");
-            let no = peak.notes.replace('"', "'");
-            write!(
-                w,
-                r#"{{"pk":{:.2},"bw":{:.2},"fl":{:.2},"fh":{:.2},"cf":{:.3},"rr":{:.2},"type":"{}","sp":"{}","notes":"{}"}}"#,
-                f.peak_hz / 1000.0, f.bandwidth_hz / 1000.0,
-                f.freq_low_hz / 1000.0, f.freq_high_hz / 1000.0,
-                f.cf_tail_ratio, f.rep_rate,
-                if f.is_cf { "CF" } else { "FM" },
-                sp, no,
-            )?;
-        }
-        w.write_all(b"]}")?;
+        write!(w, r#"{{"s":{},"e":{}}}"#, call.start_win, call.end_win)?;
     }
     w.write_all(b"];\n")?;
 
