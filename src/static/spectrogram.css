@@ -1,0 +1,120 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0
+}
+
+body {
+  background: #0d0d1a;
+  color: #c8c8dc;
+  font: 13px/1.5 'Courier New', monospace;
+  overflow-x: hidden
+}
+
+h1 {
+  padding: 12px 16px 2px;
+  font-size: 15px;
+  font-weight: normal;
+  color: #88aaff
+}
+
+.meta {
+  padding: 2px 16px 6px;
+  color: #666;
+  font-size: 11px
+}
+
+.help {
+  padding: 0 16px 8px;
+  color: #444;
+  font-size: 11px
+}
+
+#wrap {
+  background: #000;
+  line-height: 0
+}
+
+canvas {
+  display: block;
+  cursor: crosshair;
+  user-select: none;
+  -webkit-user-select: none
+}
+
+#info {
+  padding: 4px 16px;
+  color: #aaccff;
+  font-size: 12px;
+  min-height: 20px
+}
+
+#calls {
+  padding: 8px 16px 20px
+}
+
+#calls h2 {
+  font-size: 13px;
+  font-weight: normal;
+  color: #88aaff;
+  margin-bottom: 8px
+}
+
+table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%
+}
+
+th,
+td {
+  padding: 3px 14px 3px 0;
+  text-align: left;
+  vertical-align: top
+}
+
+th {
+  color: #555;
+  font-weight: normal;
+  border-bottom: 1px solid #222;
+  padding-bottom: 5px
+}
+
+.group-first td {
+  border-top: 1px solid #2a2a40
+}
+
+tr[data-t0] {
+  cursor: pointer
+}
+
+tr[data-t0]:hover td {
+  background: #1a1a3a;
+  color: #eee
+}
+
+tr.dubious {
+  opacity: 0.4
+}
+
+tr.dubious:hover {
+  opacity: 1
+}
+
+.cf {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 10px;
+  background: #1a4;
+  color: #afa
+}
+
+.fm {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 10px;
+  background: #148;
+  color: #adf
+}

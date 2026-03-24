@@ -48,7 +48,9 @@ Open the HTML file in any browser — no server required.
 | Scroll | Zoom in/out on the time axis |
 | Shift + scroll | Zoom in/out on the frequency axis |
 | Drag | Pan |
-| Double-click | Reset to full view |
+| Shift + drag | Select a time range — filters the passes table to matching species |
+| Escape | Clear selection and restore all table rows |
+| Double-click | Reset view and clear selection |
 | Click a pass row | Zoom to that pass |
 | Mouse hover | Crosshair with time, frequency, intensity (dB), and species label |
 
