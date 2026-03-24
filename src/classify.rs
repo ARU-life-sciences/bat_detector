@@ -118,7 +118,10 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str) {
                 "Peak <40 kHz; medium rep; rare in Britain",
             );
         }
-        return ("Long-eared bat sp. (Plecotus sp.)", "Inaudible above 65 kHz");
+        return (
+            "Long-eared bat sp. (Plecotus sp.)",
+            "Inaudible above 65 kHz",
+        );
     }
 
     // Step 10: broadband FM — general Myotis

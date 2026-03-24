@@ -144,7 +144,12 @@ fn features_for_peak(
         freq_high_hz,
         cf_tail_ratio,
         rep_rate,
-        is_cf: bandwidth_hz < 6_000.0,
+        // True CF calls are narrowband, highly concentrated at the peak, AND in the
+        // horseshoe-bat frequency range (≥70 kHz for British species).  Pipistrelle
+        // CF tails fall at ~50–60 kHz and must not be flagged as CF calls.
+        is_cf: (freq_high_hz - freq_low_hz) < 6_000.0
+            && cf_tail_ratio > 0.7
+            && peak_hz >= 70_000.0,
     }
 }
 
@@ -155,6 +160,7 @@ fn features_for_peak(
 /// separated by ≥ 10 kHz and ≥ 25% of the dominant peak's energy).
 pub fn extract_call_features(
     spectrogram: &[Vec<f32>],
+    detected: &[bool],
     start: usize,
     end: usize,
     bin_id_low: usize,
@@ -165,11 +171,25 @@ pub fn extract_call_features(
     sample_rate: f32,
     window_size: usize,
 ) -> Vec<CallFeatures> {
-    let n = end - start + 1;
+    // Average only over windows actually detected as bat within this group,
+    // so silence frames don't dilute the spectral features.
     let mut mean_power = vec![0.0f32; freq_bins];
+    let mut n = 0usize;
     for w in start..=end {
-        for (b, &p) in spectrogram[w].iter().enumerate() {
-            mean_power[b] += p;
+        if detected[w] {
+            for (b, &p) in spectrogram[w].iter().enumerate() {
+                mean_power[b] += p;
+            }
+            n += 1;
+        }
+    }
+    // Fallback: group exists but no individual windows are flagged (shouldn't happen).
+    if n == 0 {
+        n = end - start + 1;
+        for w in start..=end {
+            for (b, &p) in spectrogram[w].iter().enumerate() {
+                mean_power[b] += p;
+            }
         }
     }
     for p in &mut mean_power {
@@ -239,14 +259,19 @@ mod tests {
     const BIN_HIGH: usize = 320;            // ~120 kHz
     const BIN_ID_LOW: usize = 48;           // ~18 kHz
 
+    fn all_detected(n: usize) -> Vec<bool> {
+        vec![true; n]
+    }
+
     #[test]
     fn single_peak_frequency_is_correct() {
         // Soprano Pipistrelle territory: ~53 kHz → bin 141
         let peak_bin = (53_000.0 / HZ_PER_BIN).round() as usize; // 141
         let spec = synthetic_spec(FREQ_BINS, peak_bin, 20);
+        let det = all_detected(20);
 
         let feats = extract_call_features(
-            &spec, 0, 19, BIN_ID_LOW, BIN_LOW, BIN_HIGH,
+            &spec, &det, 0, 19, BIN_ID_LOW, BIN_LOW, BIN_HIGH,
             FREQ_BINS, HZ_PER_BIN, SR, WS,
         );
 
@@ -265,9 +290,10 @@ mod tests {
         // A Gaussian with σ≈2 bins is very narrow (bandwidth ≪ 6 kHz)
         let peak_bin = (83_000.0 / HZ_PER_BIN).round() as usize;
         let spec = synthetic_spec(FREQ_BINS, peak_bin, 20);
+        let det = all_detected(20);
 
         let feats = extract_call_features(
-            &spec, 0, 19, BIN_ID_LOW, BIN_LOW, BIN_HIGH,
+            &spec, &det, 0, 19, BIN_ID_LOW, BIN_LOW, BIN_HIGH,
             FREQ_BINS, HZ_PER_BIN, SR, WS,
         );
 
@@ -290,9 +316,10 @@ mod tests {
             })
             .collect();
         let spec = vec![frame; 20];
+        let det = all_detected(20);
 
         let feats = extract_call_features(
-            &spec, 0, 19, BIN_ID_LOW, BIN_LOW, BIN_HIGH,
+            &spec, &det, 0, 19, BIN_ID_LOW, BIN_LOW, BIN_HIGH,
             FREQ_BINS, HZ_PER_BIN, SR, WS,
         );
 
@@ -305,9 +332,10 @@ mod tests {
         // A narrow peak concentrates almost all energy within ±4 bins → high cf_tail_ratio.
         let peak_bin = (50_000.0 / HZ_PER_BIN).round() as usize;
         let spec = synthetic_spec(FREQ_BINS, peak_bin, 20);
+        let det = all_detected(20);
 
         let feats = extract_call_features(
-            &spec, 0, 19, BIN_ID_LOW, BIN_LOW, BIN_HIGH,
+            &spec, &det, 0, 19, BIN_ID_LOW, BIN_LOW, BIN_HIGH,
             FREQ_BINS, HZ_PER_BIN, SR, WS,
         );
 
