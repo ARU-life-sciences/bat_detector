@@ -144,11 +144,21 @@ fn print_batch_summary(
     // Sort descending by pass count, then alphabetically by species name.
     rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.1.cmp(b.0.1)));
 
+    const SP_W: usize = 38;
+    let truncate = |s: &str| -> String {
+        if s.chars().count() <= SP_W {
+            s.to_string()
+        } else {
+            let t: String = s.chars().take(SP_W - 1).collect();
+            format!("{}…", t)
+        }
+    };
+
     println!();
     println!("  {:<8}  {:<38}  {:>6}  {:>7}", "Code", "Species", "Passes", "Pulses");
     println!("  {}", "─".repeat(64));
     for ((code, species), (passes, pulses)) in &rows {
-        println!("  {:<8}  {:<38}  {:>6}  {:>7}", code, species, passes, pulses);
+        println!("  {:<8}  {:<38}  {:>6}  {:>7}", code, truncate(species), passes, pulses);
     }
     println!("───────────────────────────────────────────────────────────────");
 }
