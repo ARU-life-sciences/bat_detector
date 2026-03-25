@@ -1,6 +1,6 @@
 [package]
 name = "bat_detector"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Bat call detector and classifier for AudioMoth WAV recordings"
 license = "MIT"
@@ -9,6 +9,7 @@ repository = "https://github.com/ARU-life-sciences/bat_detector"
 [dependencies]
 hound = "3.5.1"
 image = "0.25"
+rayon = "1.11.0"
 rustfft = "6.4.1"
 
 # The profile that 'dist' will build with

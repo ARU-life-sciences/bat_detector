@@ -4,6 +4,7 @@ mod features;
 mod output;
 
 use hound::WavReader;
+use rayon::prelude::*;
 
 use output::{CallGroupInfo, PeakInfo, PassInfo};
 
@@ -62,7 +63,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if meta.is_dir() {
         run_batch(path, force_output, threshold)
     } else {
-        process_file(path, force_output, threshold).map(|_| ())
+        process_file(path, force_output, threshold, false).map(|_| ())
     }
 }
 
@@ -84,18 +85,29 @@ fn run_batch(dir: &str, force_output: bool, threshold: f32) -> Result<(), Box<dy
         return Ok(());
     }
 
-    eprintln!("Batch: {} WAV files in '{}'", wav_files.len(), dir);
+    let n_threads = rayon::current_num_threads();
+    eprintln!("Batch: {} WAV files in '{}' ({} threads)", wav_files.len(), dir, n_threads);
+
+    // Process files in parallel; results are collected in original filename order.
+    // Per-pass detail lines are suppressed (quiet=true) — interleaved output from
+    // multiple threads would be unreadable; use the per-file HTML/CSV for details.
+    let results: Vec<(String, Result<Vec<PassInfo>, String>)> = wav_files
+        .par_iter()
+        .map(|path| {
+            let r = process_file(path, force_output, threshold, true)
+                .map_err(|e| e.to_string());
+            (path.clone(), r)
+        })
+        .collect();
 
     let mut all_passes: Vec<(String, Vec<PassInfo>)> = Vec::new();
     let mut n_with_bats = 0usize;
 
-    for path in &wav_files {
-        match process_file(path, force_output, threshold) {
+    for (path, result) in results {
+        match result {
             Ok(passes) => {
-                if !passes.is_empty() {
-                    n_with_bats += 1;
-                }
-                all_passes.push((path.clone(), passes));
+                if !passes.is_empty() { n_with_bats += 1; }
+                all_passes.push((path, passes));
             }
             Err(e) => eprintln!("  skipping '{}': {}", path, e),
         }
@@ -172,6 +184,7 @@ fn process_file(
     path: &str,
     force_output: bool,
     threshold: f32,
+    quiet: bool,
 ) -> Result<Vec<PassInfo>, Box<dyn std::error::Error>> {
     let stem = path.trim_end_matches(".wav");
 
@@ -413,27 +426,29 @@ fn process_file(
         }
     }
 
-    // ── Print pass summary ────────────────────────────────────────────────────
-    for (i, pass) in passes.iter().enumerate() {
-        let extra = if pass.n_extra > 0 {
-            format!(", +{} nearby", pass.n_extra)
-        } else {
-            String::new()
-        };
-        let flag = if pass.dubious {
-            if pass.n_pulses == 1 { " [dubious: nested]" } else { " [dubious: overlapping]" }
-        } else { "" };
-        println!(
-            "{}: pass {} {:.1}–{:.1}s ({} pulse{}{}) → {} - {}{}",
-            path, i + 1,
-            pass.start_sec, pass.end_sec,
-            pass.n_pulses,
-            if pass.n_pulses == 1 { "" } else { "s" },
-            extra,
-            pass.code,
-            pass.species,
-            flag,
-        );
+    // ── Print pass summary (suppressed in batch/quiet mode) ──────────────────
+    if !quiet {
+        for (i, pass) in passes.iter().enumerate() {
+            let extra = if pass.n_extra > 0 {
+                format!(", +{} nearby", pass.n_extra)
+            } else {
+                String::new()
+            };
+            let flag = if pass.dubious {
+                if pass.n_pulses == 1 { " [dubious: nested]" } else { " [dubious: overlapping]" }
+            } else { "" };
+            println!(
+                "{}: pass {} {:.1}–{:.1}s ({} pulse{}{}) → {} - {}{}",
+                path, i + 1,
+                pass.start_sec, pass.end_sec,
+                pass.n_pulses,
+                if pass.n_pulses == 1 { "" } else { "s" },
+                extra,
+                pass.code,
+                pass.species,
+                flag,
+            );
+        }
     }
 
     // ── dB normalisation → spec_bytes ─────────────────────────────────────────
