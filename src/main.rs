@@ -30,6 +30,14 @@ const SEARCH_BAND_HZ: f32 = 5_000.0;
 /// Secondary detection threshold as a fraction of the detected pulse's band energy.
 const LOCAL_SEARCH_THRESH: f32 = 0.3;
 
+/// Minimum −10 dB bandwidth for a non-CF call group to be kept (Hz).
+///
+/// Genuine FM bat calls sweep across at least 5–30 kHz so their mean spectrum
+/// is broad.  Narrowband interference (electronic tones, machinery harmonics)
+/// concentrates energy in a very thin slice and is rejected here.  Horseshoe-bat
+/// CF calls (is_cf = true) are exempt — they are intentionally narrowband.
+const MIN_FM_BANDWIDTH_HZ: f32 = 3_000.0;
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("Error: {}", e);
@@ -297,6 +305,15 @@ fn process_file(
             peaks,
         });
     }
+
+    // ── Bandwidth gate: reject narrowband interference ────────────────────────
+    // Genuine FM bat calls sweep across at least a few kHz, giving a broad mean
+    // spectrum.  Electronic tones, machinery harmonics, and similar narrowband
+    // artefacts concentrate energy in < 3 kHz and are dropped here.  CF calls
+    // (horseshoe bats, is_cf = true) are exempt — they are intentionally narrow.
+    calls.retain(|c| {
+        c.peaks.iter().any(|p| p.features.is_cf || p.features.bandwidth_hz >= MIN_FM_BANDWIDTH_HZ)
+    });
 
     // ── Aggregate into species passes ─────────────────────────────────────────
     let mut passes = output::compute_passes(&calls, PASS_GAP);

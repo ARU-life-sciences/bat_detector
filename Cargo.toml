@@ -1,6 +1,6 @@
 [package]
 name = "bat_detector"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Bat call detector and classifier for AudioMoth WAV recordings"
 license = "MIT"
