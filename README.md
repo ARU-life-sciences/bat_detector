@@ -69,6 +69,7 @@ The red strip along the top of the spectrogram marks windows where bat energy wa
 | `n_pulses` | Pulses detected above threshold |
 | `n_extra` | Sub-threshold pulses found by the local ±1 s search (single-pulse passes only) |
 | `mean_peak_khz` | Mean peak frequency across pulses in the pass (kHz) |
+| `peak_hz_std_khz` | Standard deviation of peak frequency across pulses (kHz); zero for single-pulse passes; low values indicate a tightly-clustered, species-consistent call sequence |
 | `freq_low_khz` | Mean −20 dB lower frequency bound (kHz) |
 | `freq_high_khz` | Mean −20 dB upper frequency bound (kHz) |
 | `bandwidth_khz` | Mean −10 dB bandwidth (kHz) |
@@ -81,6 +82,27 @@ The red strip along the top of the spectrogram marks windows where bat energy wa
 | `species` | Species common and scientific name |
 | `notes` | Diagnostic notes from the classifier (field characteristics, potential confusers) |
 | `dubious` | `true` when a single-pulse pass is nested inside a larger pass of a different species |
+| `confidence` | Identification confidence score (0–1); see below |
+
+### Confidence score
+
+The `confidence` column is a 0–1 score summarising how reliable the identification is.  It is the product of two components:
+
+**Pulse-count score** — rises from 0 towards 1 as more pulses accumulate, using `1 − exp(−n / 3)`:
+
+| Effective pulses | Score |
+|-----------------|-------|
+| 1 | 0.28 |
+| 2 | 0.49 |
+| 3 | 0.63 |
+| 5 | 0.81 |
+| 10 | 0.97 |
+
+For single-pulse passes, `n_extra` sub-threshold nearby pulses are added to the count before scoring, so an isolated bat in an otherwise active area receives a higher score than a truly isolated single click.
+
+**Frequency-consistency score** — coefficient of variation of `mean_peak_khz` across pulses, scaled so a CV of 10 % gives 0.5 and 0 % gives 1.0.  Single-pulse passes (where no variance can be measured) are given a consistency of 1.0.
+
+Passes flagged `dubious` always receive a confidence of 0.  The HTML viewer colour-codes the score: green ≥ 75 %, amber ≥ 40 %, red below 40 %.
 
 ### Using energy for relative distance
 

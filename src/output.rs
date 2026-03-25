@@ -56,6 +56,10 @@ pub struct PassInfo {
     /// Additional sub-threshold pulses found by the local search (single-pulse passes only).
     pub n_extra: usize,
     pub mean_peak_hz: f32,
+    /// Standard deviation of peak frequency across pulses in this pass (Hz).
+    /// Zero for single-pulse passes.  Low values indicate a tightly-clustered,
+    /// species-consistent call sequence.
+    pub peak_hz_std: f32,
     pub mean_freq_low_hz: f32,
     pub mean_freq_high_hz: f32,
     pub mean_bandwidth_hz: f32,
@@ -73,6 +77,44 @@ pub struct PassInfo {
     /// True when this single-pulse pass is entirely nested within a larger pass of a
     /// different species, making the identification unreliable.
     pub dubious: bool,
+}
+
+impl PassInfo {
+    /// Identification confidence score in [0, 1].
+    ///
+    /// Combines two independent signals:
+    ///
+    /// **Pulse-count score** — rises from 0 towards 1 as more pulses accumulate.
+    /// Formula: `1 − exp(−effective_n / 3)`, giving roughly:
+    /// 0.28 (1 pulse) · 0.49 (2) · 0.63 (3) · 0.81 (5) · 0.97 (10+).
+    /// For single-pulse passes the `n_extra` nearby sub-threshold pulses are
+    /// added so that an isolated bat in an otherwise active area scores higher.
+    ///
+    /// **Frequency-consistency score** — how tightly clustered are the peak
+    /// frequencies across pulses?  Uses the coefficient of variation (std/mean).
+    /// A CV of 0 % gives 1.0; 10 % gives 0.5; 20 % gives 0.33.
+    /// Single-pulse passes are given a consistency of 1.0 (nothing to measure).
+    ///
+    /// The final score is the product of the two components, clamped to [0, 1].
+    /// Passes flagged as `dubious` always return 0.0.
+    pub fn confidence(&self) -> f32 {
+        if self.dubious {
+            return 0.0;
+        }
+        let effective_n = if self.n_pulses == 1 {
+            (1 + self.n_extra) as f32
+        } else {
+            self.n_pulses as f32
+        };
+        let pulse_score = 1.0 - (-effective_n / 3.0).exp();
+        let consistency = if self.n_pulses > 1 && self.mean_peak_hz > 0.0 {
+            let cv = self.peak_hz_std / self.mean_peak_hz;
+            1.0 / (1.0 + 10.0 * cv)
+        } else {
+            1.0
+        };
+        (pulse_score * consistency).clamp(0.0, 1.0)
+    }
 }
 
 // Per-call sample collected during pass accumulation.
@@ -118,13 +160,17 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
         macro_rules! flush {
             ($cs:expr, $ce:expr, $sums:expr, $n:expr, $code:expr, $notes:expr) => {{
                 let n = $n as f32;
+                let mean_ph = $sums.0 / n;
+                // Variance via E[x²] − E[x]²; .max(0) guards floating-point rounding.
+                let peak_hz_std = (($sums.7 / n) - mean_ph * mean_ph).max(0.0).sqrt();
                 passes.push(PassInfo {
                     species,
                     start_sec: $cs,
                     end_sec: $ce,
                     n_pulses: $n,
                     n_extra: 0,
-                    mean_peak_hz:      $sums.0 / n,
+                    mean_peak_hz:      mean_ph,
+                    peak_hz_std,
                     mean_freq_low_hz:  $sums.1 / n,
                     mean_freq_high_hz: $sums.2 / n,
                     mean_bandwidth_hz: $sums.3 / n,
@@ -145,9 +191,10 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
         let mut cur_end   = s0.end;
         let mut cur_code  = s0.code;
         let mut cur_notes = s0.notes;
-        // sums: (peak_hz, freq_low, freq_high, bandwidth, cf_tail_ratio, rep_rate, any_cf)
+        // sums: (peak_hz, freq_low, freq_high, bandwidth, cf_tail_ratio, rep_rate, any_cf, peak_hz_sq)
         let mut sums = (s0.peak_hz, s0.freq_low_hz, s0.freq_high_hz,
-                        s0.bandwidth_hz, s0.cf_tail_ratio, s0.rep_rate, s0.is_cf);
+                        s0.bandwidth_hz, s0.cf_tail_ratio, s0.rep_rate, s0.is_cf,
+                        s0.peak_hz * s0.peak_hz);
         let mut count = 1usize;
 
         for s in &items[1..] {
@@ -160,6 +207,7 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                 sums.4 += s.cf_tail_ratio;
                 sums.5 += s.rep_rate;
                 sums.6 |= s.is_cf;
+                sums.7 += s.peak_hz * s.peak_hz;
                 count += 1;
             } else {
                 flush!(cur_start, cur_end, sums, count, cur_code, cur_notes);
@@ -168,7 +216,8 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                 cur_code  = s.code;
                 cur_notes = s.notes;
                 sums = (s.peak_hz, s.freq_low_hz, s.freq_high_hz,
-                        s.bandwidth_hz, s.cf_tail_ratio, s.rep_rate, s.is_cf);
+                        s.bandwidth_hz, s.cf_tail_ratio, s.rep_rate, s.is_cf,
+                        s.peak_hz * s.peak_hz);
                 count = 1;
             }
         }
@@ -234,9 +283,9 @@ pub fn write_csv(
     writeln!(
         w,
         "filename,date,time,pass,start_s,end_s,duration_ms,\
-         n_pulses,n_extra,mean_peak_khz,freq_low_khz,freq_high_khz,\
+         n_pulses,n_extra,mean_peak_khz,peak_hz_std_khz,freq_low_khz,freq_high_khz,\
          bandwidth_khz,cf_tail_ratio,rep_rate_hz,is_cf,\
-         mean_energy_db,peak_energy_db,code,species,notes,dubious"
+         mean_energy_db,peak_energy_db,code,species,notes,dubious,confidence"
     )?;
 
     for (i, p) in passes.iter().enumerate() {
@@ -245,14 +294,15 @@ pub fn write_csv(
         let notes_quoted   = format!("\"{}\"", p.notes.replace('"', "\"\""));
         writeln!(
             w,
-            "{},{},{},{},{:.3},{:.3},{:.0},{},{},{:.3},{:.3},{:.3},{:.3},{:.4},{:.2},{},{:.2},{:.2},{},{},{},{}",
+            "{},{},{},{},{:.3},{:.3},{:.0},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.2},{},{:.2},{:.2},{},{},{},{},{:.2}",
             filename,
             date, time,
             i + 1,
             p.start_sec, p.end_sec,
             (p.end_sec - p.start_sec) * 1000.0,
             p.n_pulses, p.n_extra,
-            p.mean_peak_hz      / 1000.0,
+            p.mean_peak_hz  / 1000.0,
+            p.peak_hz_std   / 1000.0,
             p.mean_freq_low_hz  / 1000.0,
             p.mean_freq_high_hz / 1000.0,
             p.mean_bandwidth_hz / 1000.0,
@@ -264,6 +314,7 @@ pub fn write_csv(
             species_quoted,
             notes_quoted,
             p.dubious,
+            p.confidence(),
         )?;
     }
 
@@ -439,12 +490,13 @@ pub fn write_html(
     w.write_all(
         b"<table><thead><tr>\
           <th>#</th><th>Time</th><th>Duration</th>\
-          <th>Pulses</th><th>Mean peak</th><th>Code</th><th>Species</th>\
+          <th>Pulses</th><th>Mean peak</th><th>Code</th><th>Species</th><th>Conf.</th>\
           </tr></thead><tbody>\n",
     )?;
 
     for (i, pass) in passes.iter().enumerate() {
         let duration_ms = (pass.end_sec - pass.start_sec) * 1000.0;
+        let conf = pass.confidence();
         let row_class = if pass.dubious { "dubious" } else { "" };
         let pulses_cell = if pass.n_extra > 0 {
             format!(
@@ -462,6 +514,13 @@ pub fn write_html(
         } else {
             pass.species.to_string()
         };
+        // Colour the confidence badge: green ≥ 0.75, amber ≥ 0.40, red below.
+        let conf_color = if conf >= 0.75 { "#3a3" } else if conf >= 0.40 { "#963" } else { "#933" };
+        let conf_cell = format!(
+            "<span style=\"display:inline-block;padding:1px 5px;border-radius:2px;\
+             font-size:10px;background:{};color:#eee\">{:.0}%</span>",
+            conf_color, conf * 100.0
+        );
         write!(
             w,
             "<tr data-t0=\"{:.3}\" data-t1=\"{:.3}\" class=\"{}\">\
@@ -471,6 +530,7 @@ pub fn write_html(
              <td>{}</td>\
              <td>{:.1}kHz</td>\
              <td><code style=\"color:#adf\">{}</code></td>\
+             <td>{}</td>\
              <td>{}</td>\
              </tr>\n",
             pass.start_sec, pass.end_sec,
@@ -482,6 +542,7 @@ pub fn write_html(
             pass.mean_peak_hz / 1000.0,
             pass.code,
             species_cell,
+            conf_cell,
         )?;
     }
     w.write_all(b"</tbody></table>\n</div>\n")?;
