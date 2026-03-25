@@ -10,7 +10,14 @@ use output::{CallGroupInfo, PeakInfo};
 const BAT_FREQ_LOW_HZ: f32 = 20_000.0;
 const BAT_FREQ_HIGH_HZ: f32 = 120_000.0;
 const ID_FREQ_LOW_HZ: f32 = 18_000.0;
-const ENERGY_THRESHOLD: f32 = 1.08;
+/// A window is flagged as bat activity when its mean bat-band energy exceeds
+/// the local 10th-percentile noise floor by this factor.  Raise to reduce
+/// false positives in noisy recordings; lower to catch distant/faint calls.
+const DETECTION_THRESHOLD: f32 = 3.0;
+/// Half-width (seconds) of the rolling window used to estimate the local noise
+/// floor.  Wider → more stable estimate; narrower → faster adaptation to
+/// sudden changes in background noise (e.g. intermittent insect bursts).
+const NOISE_WINDOW_SECS: f32 = 3.0;
 const WINDOW_SIZE: usize = 1024;
 const GAP_FILL: usize = 25;
 /// Maximum gap (seconds) between consecutive same-species groups to merge into one pass.
@@ -75,14 +82,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bin_high = ((BAT_FREQ_HIGH_HZ / hz_per_bin).round() as usize).min(freq_bins - 1);
     let bin_id_low = (ID_FREQ_LOW_HZ / hz_per_bin).round() as usize;
 
-    // ── Detection pass ────────────────────────────────────────────────────────
-    let windows =
-        detection::process(&samples, sample_rate, WINDOW_SIZE, bin_low, bin_high, ENERGY_THRESHOLD);
-    let n_windows = windows.len();
+    // ── FFT spectrogram ───────────────────────────────────────────────────────
+    let spectrogram = detection::compute_spectrogram(&samples, WINDOW_SIZE);
+    let n_windows = spectrogram.len();
 
-    // ── Split into spectrogram + detection vectors ────────────────────────────
-    let detected: Vec<bool> = windows.iter().map(|w| w.is_bat).collect();
-    let spectrogram: Vec<Vec<f32>> = windows.into_iter().map(|w| w.power).collect();
+    // ── Adaptive bat-window detection ─────────────────────────────────────────
+    let noise_half_window =
+        (NOISE_WINDOW_SECS * sample_rate / WINDOW_SIZE as f32).round() as usize;
+    let detected = detection::detect_bat_windows(
+        &spectrogram,
+        bin_low,
+        bin_high,
+        DETECTION_THRESHOLD,
+        noise_half_window,
+    );
 
     // ── Call grouping ─────────────────────────────────────────────────────────
     let groups = detection::group_calls(&detected, GAP_FILL);

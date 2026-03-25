@@ -91,7 +91,7 @@ To estimate relative activity, group the CSV by species and date, count rows (`n
 ## Detection method
 
 1. The WAV is divided into non-overlapping 1024-point Hann-windowed frames.
-2. A window is flagged as bat activity when the mean power in the 20–120 kHz band exceeds the whole-spectrum mean by a factor of 1.08.
+2. For each window the mean power in the 20–120 kHz bat band is computed.  A rolling 10th-percentile of bat-band energy over the surrounding ±3 seconds provides a local noise floor estimate.  A window is flagged as bat activity when its bat-band energy exceeds that noise floor by a factor of 3×.  Using a low percentile of the local neighbourhood (rather than the current frame's whole-spectrum mean) makes detection robust to constant ultrasonic interference sources such as insects or machinery, because the threshold rises and falls with the background.
 3. Consecutive flagged windows (with gaps ≤ 25 windows filled) are grouped into call groups.
 4. Spectral features are extracted from each group: peak frequency, bandwidth, frequency range, CF-tail energy ratio, and pulse repetition rate.
 5. Calls are classified with the British bat key (Cornes, Bedfordshire Bat Group, 2008).

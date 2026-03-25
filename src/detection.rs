@@ -1,20 +1,8 @@
 use rustfft::{num_complex::Complex, FftPlanner};
 
-pub struct Window {
-    pub power: Vec<f32>,
-    pub is_bat: bool,
-}
-
-/// FFT-process `samples` into non-overlapping windows with Hann weighting.
-/// Returns one `Window` per complete frame.
-pub fn process(
-    samples: &[f32],
-    _sample_rate: f32,
-    window_size: usize,
-    bin_low: usize,
-    bin_high: usize,
-    energy_threshold: f32,
-) -> Vec<Window> {
+/// FFT-process `samples` into non-overlapping Hann-windowed frames.
+/// Returns one power spectrum (`Vec<f32>` of length `window_size/2`) per complete frame.
+pub fn compute_spectrogram(samples: &[f32], window_size: usize) -> Vec<Vec<f32>> {
     let freq_bins = window_size / 2;
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(window_size);
@@ -36,18 +24,60 @@ pub fn process(
                 })
                 .collect();
             fft.process(&mut buffer);
+            buffer[..freq_bins].iter().map(|c| c.norm_sqr()).collect()
+        })
+        .collect()
+}
 
-            let power: Vec<f32> =
-                buffer[..freq_bins].iter().map(|c| c.norm_sqr()).collect();
+/// Flag windows that contain bat energy using an adaptive noise floor.
+///
+/// For each window the mean bat-band energy is compared against a local noise
+/// floor estimate derived from the surrounding `±noise_half_window` windows.
+/// The noise floor is the **10th percentile** of bat-band energies in that
+/// neighbourhood: because bats are present in a small fraction of frames even
+/// during active surveys, the low percentile stays close to the true background
+/// regardless of how loud or sustained the calls are.
+///
+/// A window is flagged when:
+///   `bat_band_energy  >  noise_floor_10th_pct  ×  threshold_factor`
+///
+/// Compared with a fixed whole-spectrum ratio this approach is robust to
+/// constant ultrasonic interference (insects, machinery) because the threshold
+/// rises and falls with the local background level.
+pub fn detect_bat_windows(
+    spectrogram: &[Vec<f32>],
+    bin_low: usize,
+    bin_high: usize,
+    threshold_factor: f32,
+    noise_half_window: usize,
+) -> Vec<bool> {
+    let n = spectrogram.len();
+    if n == 0 {
+        return vec![];
+    }
 
-            let bat_energy = power[bin_low..=bin_high].iter().sum::<f32>()
-                / (bin_high - bin_low + 1) as f32;
-            let total_energy =
-                power[1..].iter().sum::<f32>() / (freq_bins - 1) as f32;
-            let ratio =
-                if total_energy > 0.0 { bat_energy / total_energy } else { 0.0 };
+    // Step 1 — mean bat-band energy per window.
+    let n_bat_bins = (bin_high - bin_low + 1) as f32;
+    let bat_energies: Vec<f32> = spectrogram
+        .iter()
+        .map(|w| w[bin_low..=bin_high].iter().sum::<f32>() / n_bat_bins)
+        .collect();
 
-            Window { power, is_bat: ratio > energy_threshold }
+    // Step 2 — per-window adaptive threshold.
+    // For each window, collect bat-band energies from its neighbourhood,
+    // sort them, and take the 10th percentile as the local noise floor.
+    bat_energies
+        .iter()
+        .enumerate()
+        .map(|(i, &e)| {
+            let lo = i.saturating_sub(noise_half_window);
+            let hi = (i + noise_half_window + 1).min(n);
+            let mut buf: Vec<f32> = bat_energies[lo..hi].to_vec();
+            buf.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            // 10th percentile index (floor).
+            let p10 = buf[(buf.len() - 1) / 10];
+            let noise_floor = p10.max(1e-12); // guard against silent recordings
+            e > noise_floor * threshold_factor
         })
         .collect()
 }
