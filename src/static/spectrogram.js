@@ -335,8 +335,17 @@ window.addEventListener('mousemove', function(e) {
     const bv = D.bytes[wi * D.nB + bi];
     const db = bv > 0 ? (bv / 255 * 80 - 80).toFixed(1) : '\u221280';
     // Look up which pass (if any) the current time falls inside.
-    let sp = '', co = '';
-    for (const p of D.passes) { if (tsec >= p.t0 && tsec <= p.t1) { sp = p.sp; co = p.co; break; } }
+    // Skip dubious passes — they are absorbed into a dominant pass and should
+    // not override its label in the hover tooltip.
+    // When multiple non-dubious passes overlap, prefer the shortest (most specific).
+    let sp = '', co = '', bestDur = Infinity;
+    for (const p of D.passes) {
+      if (p.dub) continue;
+      if (tsec >= p.t0 && tsec <= p.t1) {
+        const dur = p.t1 - p.t0;
+        if (dur < bestDur) { bestDur = dur; sp = p.sp; co = p.co; }
+      }
+    }
     // Update the status bar below the canvas.
     document.getElementById('info').textContent =
       't = ' + tsec.toFixed(3) + ' s\u2003|\u2003f = ' + fkhz.toFixed(2) + ' kHz\u2003|\u2003' + db + ' dB' + (sp ? '\u2003|\u2003' + co + ' \u00b7 ' + sp : '');

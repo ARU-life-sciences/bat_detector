@@ -29,7 +29,18 @@ pub fn compute_spectrogram(samples: &[f32], window_size: usize) -> Vec<Vec<f32>>
         .collect()
 }
 
-/// Flag windows that contain bat energy using an adaptive noise floor.
+/// Minimum ratio of bat-band mean energy to whole-spectrum mean energy.
+///
+/// This secondary check complements the adaptive noise-floor test.  Broadband
+/// noise sources (traffic, wind) elevate all frequency bins roughly equally,
+/// keeping this ratio near 1.0.  Real bat calls concentrate energy in the bat
+/// band and push the ratio well above 1.  Setting the minimum to 1.05 rejects
+/// broadband interference while passing genuine bat activity.
+const SPECTRAL_RATIO_MIN: f32 = 1.05;
+
+/// Flag windows that contain bat energy using a two-condition detector.
+///
+/// **Condition 1 — adaptive noise floor (handles high-frequency insect noise)**
 ///
 /// For each window the mean bat-band energy is compared against a local noise
 /// floor estimate derived from the surrounding `±noise_half_window` windows.
@@ -38,12 +49,17 @@ pub fn compute_spectrogram(samples: &[f32], window_size: usize) -> Vec<Vec<f32>>
 /// during active surveys, the low percentile stays close to the true background
 /// regardless of how loud or sustained the calls are.
 ///
-/// A window is flagged when:
-///   `bat_band_energy  >  noise_floor_10th_pct  ×  threshold_factor`
+/// `bat_band_energy  >  noise_floor_10th_pct  ×  threshold_factor`
 ///
-/// Compared with a fixed whole-spectrum ratio this approach is robust to
-/// constant ultrasonic interference (insects, machinery) because the threshold
-/// rises and falls with the local background level.
+/// **Condition 2 — spectral ratio (handles broadband low-frequency noise)**
+///
+/// The bat-band mean must also exceed the whole-spectrum mean by at least
+/// `SPECTRAL_RATIO_MIN` (1.05).  Broadband noise (traffic, wind) raises all
+/// bins equally so its ratio stays near 1.0 and the window is rejected even
+/// when it passes Condition 1.  Real bat calls concentrate energy in the bat
+/// band and clear this bar comfortably.
+///
+/// Both conditions must be satisfied for a window to be flagged.
 pub fn detect_bat_windows(
     spectrogram: &[Vec<f32>],
     bin_low: usize,
@@ -63,21 +79,31 @@ pub fn detect_bat_windows(
         .map(|w| w[bin_low..=bin_high].iter().sum::<f32>() / n_bat_bins)
         .collect();
 
-    // Step 2 — per-window adaptive threshold.
-    // For each window, collect bat-band energies from its neighbourhood,
-    // sort them, and take the 10th percentile as the local noise floor.
+    // Step 2 — per-window detection: adaptive floor AND spectral ratio.
     bat_energies
         .iter()
         .enumerate()
         .map(|(i, &e)| {
+            // Condition 1: adaptive noise-floor check.
             let lo = i.saturating_sub(noise_half_window);
             let hi = (i + noise_half_window + 1).min(n);
             let mut buf: Vec<f32> = bat_energies[lo..hi].to_vec();
             buf.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            // 10th percentile index (floor).
             let p10 = buf[(buf.len() - 1) / 10];
-            let noise_floor = p10.max(1e-12); // guard against silent recordings
-            e > noise_floor * threshold_factor
+            let noise_floor = p10.max(1e-12);
+            let adaptive_ok = e > noise_floor * threshold_factor;
+
+            // Condition 2: spectral-ratio check.
+            let w = &spectrogram[i];
+            let n_all = (w.len().saturating_sub(1)) as f32;
+            let total_mean = if n_all > 0.0 {
+                w[1..].iter().sum::<f32>() / n_all
+            } else {
+                0.0
+            };
+            let ratio_ok = total_mean > 0.0 && e / total_mean > SPECTRAL_RATIO_MIN;
+
+            adaptive_ok && ratio_ok
         })
         .collect()
 }

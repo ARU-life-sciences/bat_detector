@@ -40,24 +40,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let force_output = args.iter().any(|a| a == "--output");
+
+    // --threshold <value>  overrides DETECTION_THRESHOLD at runtime.
+    let threshold = if let Some(pos) = args.iter().position(|a| a == "--threshold") {
+        args.get(pos + 1)
+            .ok_or("--threshold requires a value")?
+            .parse::<f32>()
+            .map_err(|_| "--threshold value must be a number (e.g. --threshold 5.0)")?
+    } else {
+        DETECTION_THRESHOLD
+    };
+
     let path = args
         .iter()
         .find(|a| !a.starts_with('-'))
-        .ok_or("Usage: bat_detector [--output] <file.wav | directory>")?;
+        .ok_or("Usage: bat_detector [--output] [--threshold <n>] <file.wav | directory>")?;
 
     let meta = std::fs::metadata(path)
         .map_err(|e| format!("Cannot access '{}': {}", path, e))?;
 
     if meta.is_dir() {
-        run_batch(path, force_output)
+        run_batch(path, force_output, threshold)
     } else {
-        process_file(path, force_output).map(|_| ())
+        process_file(path, force_output, threshold).map(|_| ())
     }
 }
 
 // ── Batch directory mode ───────────────────────────────────────────────────────
 
-fn run_batch(dir: &str, force_output: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run_batch(dir: &str, force_output: bool, threshold: f32) -> Result<(), Box<dyn std::error::Error>> {
     // Collect all WAV files directly inside `dir` (non-recursive), sorted by name.
     let mut wav_files: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| format!("Cannot read directory '{}': {}", dir, e))?
@@ -79,7 +90,7 @@ fn run_batch(dir: &str, force_output: bool) -> Result<(), Box<dyn std::error::Er
     let mut n_with_bats = 0usize;
 
     for path in &wav_files {
-        match process_file(path, force_output) {
+        match process_file(path, force_output, threshold) {
             Ok(passes) => {
                 if !passes.is_empty() {
                     n_with_bats += 1;
@@ -150,6 +161,7 @@ fn print_batch_summary(
 fn process_file(
     path: &str,
     force_output: bool,
+    threshold: f32,
 ) -> Result<Vec<PassInfo>, Box<dyn std::error::Error>> {
     let stem = path.trim_end_matches(".wav");
 
@@ -200,7 +212,7 @@ fn process_file(
         &spectrogram,
         bin_low,
         bin_high,
-        DETECTION_THRESHOLD,
+        threshold,
         noise_half_window,
     );
 
@@ -281,6 +293,38 @@ fn process_file(
         }
     }
 
+    // ── Mark dubious + absorb: overlapping multi-pulse passes ─────────────────
+    // When ≥50% of a pass's duration is covered by another pass with ≥2× as many
+    // pulses, the weaker pass is classification noise from the same bat sequence.
+    // We flag it dubious AND absorb it into the dominant pass: the dominant pass's
+    // time range is extended to cover the absorbed pass and its pulse count grows,
+    // giving a more accurate time span and a higher confidence score.
+    //
+    // Collect (dominated, dominant) index pairs first so we can batch-apply the
+    // extensions without the in-progress modifications affecting the comparisons.
+    let mut absorb: Vec<(usize, usize)> = Vec::new();
+    for i in 0..n_passes {
+        if passes[i].dubious { continue; }
+        let (pi_s, pi_e, pi_n) = (passes[i].start_sec, passes[i].end_sec, passes[i].n_pulses);
+        let pi_dur = (pi_e - pi_s).max(1e-6);
+        for j in 0..n_passes {
+            if i == j || passes[j].n_pulses < 2 * pi_n { continue; }
+            let (pj_s, pj_e) = (passes[j].start_sec, passes[j].end_sec);
+            let overlap = (pi_e.min(pj_e) - pi_s.max(pj_s)).max(0.0);
+            if overlap / pi_dur >= 0.5 {
+                passes[i].dubious = true;
+                absorb.push((i, j));
+                break;
+            }
+        }
+    }
+    for (i, j) in absorb {
+        let (pi_s, pi_e, pi_n) = (passes[i].start_sec, passes[i].end_sec, passes[i].n_pulses);
+        if pi_s < passes[j].start_sec { passes[j].start_sec = pi_s; }
+        if pi_e > passes[j].end_sec   { passes[j].end_sec   = pi_e; }
+        passes[j].n_pulses += pi_n;
+    }
+
     // ── Local search: sub-threshold pulses near single-pulse passes ───────────
     for i in 0..passes.len() {
         if passes[i].n_pulses != 1 || passes[i].dubious { continue; }
@@ -314,13 +358,25 @@ fn process_file(
         let lo_win = call.start_win.saturating_sub(search_wins);
         let hi_win = (call.end_win + search_wins).min(n_windows - 1);
 
-        passes[i].n_extra = detection::targeted_pulse_count(
+        let n_extra = detection::targeted_pulse_count(
             &spectrogram,
             lo_win, hi_win,
             call.start_win, call.end_win,
             peak_hz, hz_per_bin, SEARCH_BAND_HZ,
             det_energy, LOCAL_SEARCH_THRESH,
         );
+
+        // Only credit the nearby pulses if no other non-dubious multi-pulse pass
+        // is already active in the same ±SEARCH_SECS window.  If another species
+        // is present the extra energy is theirs, not sub-threshold calls from
+        // this bat, and crediting it inflates the confidence score incorrectly.
+        let search_t0 = pass_s - SEARCH_SECS;
+        let search_t1 = pass_e + SEARCH_SECS;
+        let other_bat_nearby = passes.iter().enumerate().any(|(j, p)| {
+            j != i && !p.dubious && p.n_pulses > 1
+                && p.start_sec < search_t1 && p.end_sec > search_t0
+        });
+        passes[i].n_extra = if other_bat_nearby { 0 } else { n_extra };
     }
 
     // ── Per-pass energy (dB re FFT² units, comparable across files) ──────────
@@ -354,7 +410,9 @@ fn process_file(
         } else {
             String::new()
         };
-        let flag = if pass.dubious { " [dubious: nested]" } else { "" };
+        let flag = if pass.dubious {
+            if pass.n_pulses == 1 { " [dubious: nested]" } else { " [dubious: overlapping]" }
+        } else { "" };
         println!(
             "{}: pass {} {:.1}–{:.1}s ({} pulse{}{}) → {} - {}{}",
             path, i + 1,

@@ -6,6 +6,9 @@ pub struct CallFeatures {
     pub cf_tail_ratio: f32,
     pub rep_rate: f32,
     pub is_cf: bool,
+    /// Mean individual call duration in milliseconds.
+    /// Estimated as (detected windows in group) / (pulses in group) × window_ms.
+    pub mean_call_duration_ms: f32,
 }
 
 /// Find significant spectral peaks in `spectrum[bin_low..=bin_high]`.
@@ -68,6 +71,7 @@ fn features_for_peak(
     spectrogram: &[Vec<f32>],
     start: usize,
     end: usize,
+    n_detected: usize,
     peak_bin: usize,
     bin_id_low: usize,
     left_bound: usize,
@@ -137,6 +141,12 @@ fn features_for_peak(
     let duration_sec = (end - start + 1) as f32 * window_size as f32 / sample_rate;
     let rep_rate = n_pulses as f32 / duration_sec;
 
+    // Mean individual call duration: detected "on" time divided by pulse count.
+    // n_detected counts only windows that passed the detector (not gap-fill frames),
+    // so this estimates the mean time the bat was actively emitting per pulse.
+    let mean_call_duration_ms =
+        n_detected as f32 / n_pulses as f32 * window_size as f32 / sample_rate * 1000.0;
+
     CallFeatures {
         peak_hz,
         bandwidth_hz,
@@ -150,6 +160,7 @@ fn features_for_peak(
         is_cf: (freq_high_hz - freq_low_hz) < 6_000.0
             && cf_tail_ratio > 0.7
             && peak_hz >= 70_000.0,
+        mean_call_duration_ms,
     }
 }
 
@@ -217,6 +228,7 @@ pub fn extract_call_features(
                 spectrogram,
                 start,
                 end,
+                n,
                 peak_bin,
                 bin_id_low,
                 left_bound,

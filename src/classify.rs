@@ -64,25 +64,58 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'stat
         }
 
         // ── Steps 7–8: Big bats ───────────────────────────────────────────────
-        if f.peak_hz >= 27_000.0 {
+        //
+        // Serotine vs Noctule/Leisler's separator: call sweep height (freq_high).
+        //   Serotine sweeps from ~32 kHz down to ~22 kHz  → freq_high ≈ 32 kHz.
+        //   Noctule/Leisler's sweep from ~52 kHz to ~15–20 kHz → freq_high ≈ 52 kHz.
+        // Using freq_high < 38 kHz is more reliable than the old peak >= 27 kHz
+        // boundary, which was too low (Serotine peaks 25–42 kHz) and prevented
+        // Leisler's (peak up to 36.6 kHz) from reaching the Noctule/Leisler's path.
+        // The peak_hz >= 25 kHz guard prevents Noctule calls with a noisy narrow
+        // sweep from being misidentified as Serotine.
+        if f.freq_high_hz < 38_000.0 && f.peak_hz >= 25_000.0
+            && f.mean_call_duration_ms < 13.0
+        {
             return (
                 "EPTSER",
                 "Serotine (Eptesicus serotinus)",
-                "Peak 27-35 kHz; medium rep ~10/s; drunken syncopated rhythm; \
-                 NB: may be confused with Barbastelle, Brown Long-eared or Greater Mouse-eared",
+                "Peak 25-42 kHz; call sweep limited to ~32 kHz; individual call <13 ms; \
+                 medium rep ~10/s; syncopated rhythm",
             );
         }
-        if f.freq_low_hz <= 21_000.0 {
+        // Noctule vs Leisler's separation uses the frequency floor of the lower
+        // 'chop' call (the deeper half of the chip-chop alternation):
+        //   Noctule  → floor ≤ 21 kHz  (chop deepest below 21 kHz)
+        //   Leisler's→ floor  > 24 kHz (chop deepest above 24 kHz)
+        //   21–24 kHz zone is explicitly ambiguous per NBMP guidance.
+        //
+        // Rep-rate guard (≤ 10/s) stays on the Noctule check to exclude
+        // spectral noise events that happen to have a low frequency floor.
+        if f.freq_low_hz <= 21_000.0 && f.rep_rate <= 10.0 {
             return (
                 "NYCNOC",
                 "Noctule (Nyctalus noctula)",
-                "Peak <=20 kHz in at least some calls; slow rep 3-6/s; chip-chop alternation",
+                "Floor ≤21 kHz (key diagnostic: 'chop' deepest below 21 kHz); \
+                 peak ≤26 kHz; slow rep 3-6/s; chip-chop alternation at 25 kHz; \
+                 open habitat, high fast flight",
+            );
+        }
+        // 21–24 kHz floor: cannot distinguish Noctule from Leisler's on acoustics alone.
+        if f.freq_low_hz <= 24_000.0 {
+            return (
+                "NYCSPP",
+                "Noctule or Leisler's Bat (Nyctalus sp.)",
+                "Floor 21-24 kHz is ambiguous: 'chop' call deepest below 21 kHz \
+                 indicates Noctule; above 24 kHz indicates Leisler's. \
+                 Note habitat and flight height for confirmation.",
             );
         }
         return (
             "NYCLEI",
             "Leisler's Bat (Nyctalus leisleri)",
-            "All calls above 21 kHz; slow-medium rep; less marked alternation than Noctule",
+            "Floor >24 kHz (key diagnostic: 'chop' deepest above 24 kHz); \
+             peak 21-37 kHz; chip-chop at 25 kHz but floor higher than Noctule; \
+             typically lower flight than Noctule; common in N. Ireland",
         );
     }
 
@@ -172,6 +205,7 @@ mod tests {
             cf_tail_ratio: 0.9,
             rep_rate: 10.0,
             is_cf: true,
+            mean_call_duration_ms: 40.0, // horseshoe bats: long CF calls
         }
     }
 
@@ -185,6 +219,7 @@ mod tests {
             cf_tail_ratio: 0.5,
             rep_rate,
             is_cf: false,
+            mean_call_duration_ms: 5.0,
         }
     }
 
@@ -199,6 +234,7 @@ mod tests {
             cf_tail_ratio: 0.1,
             rep_rate,
             is_cf: false,
+            mean_call_duration_ms: 5.0,
         }
     }
 
@@ -256,25 +292,34 @@ mod tests {
 
     #[test]
     fn serotine() {
-        let f = fm_cf(30_000.0, 22_000.0, 45_000.0, 10.0);
+        // Serotine: sweep limited to ~32 kHz (freq_high < 38 kHz), peak 25-42 kHz
+        let f = fm_cf(30_000.0, 22_000.0, 32_000.0, 10.0);
         let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Serotine"), "{}", sp);
     }
 
     #[test]
     fn noctule() {
-        // freq_low ≤ 21 kHz → Noctule
-        let f = fm_cf(20_000.0, 18_000.0, 32_000.0, 4.0);
+        // Noctule: broad sweep to ~52 kHz, floor ≤ 21 kHz, slow rep
+        let f = fm_cf(20_000.0, 18_000.0, 52_000.0, 4.0);
         let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Noctule"), "{}", sp);
     }
 
     #[test]
     fn leisleri() {
-        // Peak < 27 kHz, freq_low > 21 kHz, has CF tail → Leisler's
-        let f = fm_cf(25_000.0, 22_000.0, 35_000.0, 5.0);
+        // Leisler's: broad sweep to ~52 kHz, floor > 24 kHz
+        let f = fm_cf(25_000.0, 26_000.0, 52_000.0, 5.0);
         let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Leisler"), "{}", sp);
+    }
+
+    #[test]
+    fn noctule_or_leisleri_ambiguous() {
+        // Floor 21–24 kHz: ambiguous zone, should return NYCSPP
+        let f = fm_cf(23_000.0, 22_500.0, 52_000.0, 5.0);
+        let (code, _, _) = classify_british(&f);
+        assert_eq!(code, "NYCSPP", "{}", code);
     }
 
     // ── Pure FM paths (Steps 9–13) ────────────────────────────────────────────

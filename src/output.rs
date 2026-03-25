@@ -66,6 +66,7 @@ pub struct PassInfo {
     pub mean_cf_tail_ratio: f32,
     pub mean_rep_rate: f32,
     pub is_cf: bool,
+    pub mean_call_duration_ms: f32,
     /// Mean bat-band power (dB, linear FFT²) over detected windows — filled after construction.
     pub mean_energy_db: f32,
     /// Peak bat-band power (dB) across detected windows — filled after construction.
@@ -122,6 +123,7 @@ struct PassSample {
     start: f32, end: f32,
     peak_hz: f32, freq_low_hz: f32, freq_high_hz: f32,
     bandwidth_hz: f32, cf_tail_ratio: f32, rep_rate: f32, is_cf: bool,
+    mean_call_duration_ms: f32,
     code: &'static str,
     notes: &'static str,
 }
@@ -144,6 +146,7 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                 cf_tail_ratio: peak.features.cf_tail_ratio,
                 rep_rate: peak.features.rep_rate,
                 is_cf: peak.features.is_cf,
+                mean_call_duration_ms: peak.features.mean_call_duration_ms,
                 code: peak.code,
                 notes: peak.notes,
             });
@@ -169,14 +172,15 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                     end_sec: $ce,
                     n_pulses: $n,
                     n_extra: 0,
-                    mean_peak_hz:      mean_ph,
+                    mean_peak_hz:           mean_ph,
                     peak_hz_std,
-                    mean_freq_low_hz:  $sums.1 / n,
-                    mean_freq_high_hz: $sums.2 / n,
-                    mean_bandwidth_hz: $sums.3 / n,
-                    mean_cf_tail_ratio:$sums.4 / n,
-                    mean_rep_rate:     $sums.5 / n,
-                    is_cf:             $sums.6,
+                    mean_freq_low_hz:       $sums.1 / n,
+                    mean_freq_high_hz:      $sums.2 / n,
+                    mean_bandwidth_hz:      $sums.3 / n,
+                    mean_cf_tail_ratio:     $sums.4 / n,
+                    mean_rep_rate:          $sums.5 / n,
+                    is_cf:                  $sums.6,
+                    mean_call_duration_ms:  $sums.8 / n,
                     mean_energy_db: 0.0,
                     peak_energy_db: 0.0,
                     code: $code,
@@ -191,10 +195,10 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
         let mut cur_end   = s0.end;
         let mut cur_code  = s0.code;
         let mut cur_notes = s0.notes;
-        // sums: (peak_hz, freq_low, freq_high, bandwidth, cf_tail_ratio, rep_rate, any_cf, peak_hz_sq)
+        // sums: (peak_hz, freq_low, freq_high, bandwidth, cf_tail_ratio, rep_rate, any_cf, peak_hz_sq, call_dur_ms)
         let mut sums = (s0.peak_hz, s0.freq_low_hz, s0.freq_high_hz,
                         s0.bandwidth_hz, s0.cf_tail_ratio, s0.rep_rate, s0.is_cf,
-                        s0.peak_hz * s0.peak_hz);
+                        s0.peak_hz * s0.peak_hz, s0.mean_call_duration_ms);
         let mut count = 1usize;
 
         for s in &items[1..] {
@@ -208,6 +212,7 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                 sums.5 += s.rep_rate;
                 sums.6 |= s.is_cf;
                 sums.7 += s.peak_hz * s.peak_hz;
+                sums.8 += s.mean_call_duration_ms;
                 count += 1;
             } else {
                 flush!(cur_start, cur_end, sums, count, cur_code, cur_notes);
@@ -217,7 +222,7 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                 cur_notes = s.notes;
                 sums = (s.peak_hz, s.freq_low_hz, s.freq_high_hz,
                         s.bandwidth_hz, s.cf_tail_ratio, s.rep_rate, s.is_cf,
-                        s.peak_hz * s.peak_hz);
+                        s.peak_hz * s.peak_hz, s.mean_call_duration_ms);
                 count = 1;
             }
         }
@@ -282,7 +287,7 @@ pub fn write_csv(
 
 const CSV_HEADER: &str = "filename,date,time,pass,start_s,end_s,duration_ms,\
     n_pulses,n_extra,mean_peak_khz,peak_hz_std_khz,freq_low_khz,freq_high_khz,\
-    bandwidth_khz,cf_tail_ratio,rep_rate_hz,is_cf,\
+    bandwidth_khz,cf_tail_ratio,rep_rate_hz,mean_call_dur_ms,is_cf,\
     mean_energy_db,peak_energy_db,code,species,notes,dubious,confidence";
 
 /// Write CSV rows for one file's passes into an already-open writer.
@@ -303,7 +308,7 @@ fn write_csv_rows<W: std::io::Write>(
         let notes_quoted   = format!("\"{}\"", p.notes.replace('"', "\"\""));
         writeln!(
             w,
-            "{},{},{},{},{:.3},{:.3},{:.0},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.2},{},{:.2},{:.2},{},{},{},{},{:.2}",
+            "{},{},{},{},{:.3},{:.3},{:.0},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.2},{:.2},{},{:.2},{:.2},{},{},{},{},{:.2}",
             filename, date, time,
             index_offset + i + 1,
             p.start_sec, p.end_sec,
@@ -316,6 +321,7 @@ fn write_csv_rows<W: std::io::Write>(
             p.mean_bandwidth_hz / 1000.0,
             p.mean_cf_tail_ratio,
             p.mean_rep_rate,
+            p.mean_call_duration_ms,
             p.is_cf,
             p.mean_energy_db, p.peak_energy_db,
             p.code,
@@ -533,10 +539,11 @@ pub fn write_html(
         } else {
             format!("{}", pass.n_pulses)
         };
+        let dubious_label = if pass.n_pulses == 1 { "nested" } else { "overlapping" };
         let species_cell = if pass.dubious {
             format!(
-                "{} <span style=\"color:#555;font-size:10px\">(nested&nbsp;&#x2753;)</span>",
-                pass.species
+                "{} <span style=\"color:#555;font-size:10px\">({}&nbsp;&#x2753;)</span>",
+                pass.species, dubious_label
             )
         } else {
             pass.species.to_string()
@@ -599,13 +606,15 @@ pub fn write_html(
     }
     w.write_all(b"];\n")?;
 
-    // Passes array — time range + code + species name, used for mouse-over labels
+    // Passes array — time range + code + species name + dubious flag,
+    // used for mouse-over labels (dubious passes are skipped in the tooltip).
     w.write_all(b"D.passes=[")?;
     for (i, pass) in passes.iter().enumerate() {
         if i > 0 { w.write_all(b",")?; }
-        write!(w, r#"{{"t0":{:.3},"t1":{:.3},"co":{},"sp":{}}}"#,
+        write!(w, r#"{{"t0":{:.3},"t1":{:.3},"co":{},"sp":{},"dub":{}}}"#,
             pass.start_sec, pass.end_sec,
-            js_str(pass.code), js_str(pass.species))?;
+            js_str(pass.code), js_str(pass.species),
+            if pass.dubious { "true" } else { "false" })?;
     }
     w.write_all(b"];\n")?;
 

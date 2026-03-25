@@ -15,11 +15,12 @@ The binary is at `target/release/bat_detector`.
 ## Usage
 
 ```
-bat_detector [--output] <file.wav | directory>
+bat_detector [--output] [--threshold <n>] <file.wav | directory>
 ```
 
 - By default, output files are only written when bat calls are detected.
 - `--output` forces output even when nothing is detected.
+- `--threshold <n>` overrides the detection sensitivity (default `3.0`).  The detector flags a window when its bat-band energy exceeds the local noise floor by this factor.  Raise the value (e.g. `--threshold 5.0` or `--threshold 8.0`) in recordings with heavy low-frequency interference (traffic, wind) to reduce false positives; lower it to catch faint or distant calls.
 
 **Single file:**
 
@@ -135,10 +136,12 @@ To estimate relative activity, group the CSV by species and date, count rows (`n
 ## Detection method
 
 1. The WAV is divided into non-overlapping 1024-point Hann-windowed frames.
-2. For each window the mean power in the 20–120 kHz bat band is computed.  A rolling 10th-percentile of bat-band energy over the surrounding ±3 seconds provides a local noise floor estimate.  A window is flagged as bat activity when its bat-band energy exceeds that noise floor by a factor of 3×.  Using a low percentile of the local neighbourhood (rather than the current frame's whole-spectrum mean) makes detection robust to constant ultrasonic interference sources such as insects or machinery, because the threshold rises and falls with the background.
+2. Each window must satisfy two independent conditions to be flagged as bat activity:
+   - **Adaptive noise floor** — the mean bat-band (20–120 kHz) energy must exceed the 10th-percentile of bat-band energies in the surrounding ±3 seconds by a factor of 3×.  Using a low rolling percentile makes this robust to constant ultrasonic interference (insects, machinery) because the threshold rises and falls with the local background.
+   - **Spectral ratio** — the bat-band mean must also exceed the whole-spectrum mean by a factor of at least 1.05.  Broadband noise sources such as traffic and wind elevate all frequency bins equally, keeping this ratio near 1.0, so they are rejected even if they pass the adaptive check.  Real bat calls concentrate energy in the bat band and comfortably clear this threshold.
 3. Consecutive flagged windows (with gaps ≤ 25 windows filled) are grouped into call groups.
 4. Spectral features are extracted from each group: peak frequency, bandwidth, frequency range, CF-tail energy ratio, and pulse repetition rate.
-5. Calls are classified with the British bat key (Cornes, Bedfordshire Bat Group, 2008).
+5. Calls are classified with the British bat key (Cornes, Bedfordshire Bat Group, 2008).  The Noctule path additionally requires a rep rate ≤ 8 /s; without this guard, low-frequency interference (traffic, wind) that happens to peak at 20–26 kHz and hits the 18 kHz frequency floor can satisfy the frequency condition and flood the Noctule bucket.
 6. Consecutive same-species groups within 2 s of each other are merged into a single *pass*.
 7. Single-pulse passes nested inside a larger pass are flagged as dubious.
 8. For remaining single-pulse passes, a local search ±1 s around the pulse looks for sub-threshold pulses at the same frequency to estimate isolation.
@@ -159,6 +162,7 @@ The following codes are used in the `species` column and on-canvas labels.  Spec
 | MYOSPP | *Myotis* sp. | Unresolved / probable Daubenton's, Whiskered or Brandt's |
 | NYCLEI | *Nyctalus leisleri* | Leisler's noctule |
 | NYCNOC | *Nyctalus noctula* | Noctule |
+| NYCSPP | *Nyctalus* sp. | Noctule or Leisler's (ambiguous floor 21–24 kHz) |
 | PIPNAT | *Pipistrellus nathusii* | Nathusius' pipistrelle |
 | PIPPIP | *Pipistrellus pipistrellus* | Common pipistrelle |
 | PIPPYG | *Pipistrellus pygmaeus* | Soprano pipistrelle |
