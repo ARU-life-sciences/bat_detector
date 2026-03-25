@@ -15,17 +15,39 @@ The binary is at `target/release/bat_detector`.
 ## Usage
 
 ```
-bat_detector [--output] <file.wav>
+bat_detector [--output] <file.wav | directory>
 ```
 
 - By default, output files are only written when bat calls are detected.
-- `--output` forces output even when nothing is detected (useful for batch processing null results).
+- `--output` forces output even when nothing is detected.
 
-**Batch processing:**
+**Single file:**
 
 ```bash
-for f in data/*.WAV; do bat_detector "$f"; done
+bat_detector data/20260322_190000.WAV
 ```
+
+**Batch — process an entire directory:**
+
+```bash
+bat_detector data/
+```
+
+All WAV files in the directory are processed in filename order.  Per-file outputs (PNG, HTML, CSV) are written as usual, and a combined `survey.csv` is written into the directory alongside a terminal species summary:
+
+```
+── Batch summary ──────────────────────────────────────────────
+  Files processed : 42  (17 with bat activity)
+
+  Code      Species                                 Passes  Pulses
+  ────────────────────────────────────────────────────────────────
+  PIPPIP    Common pipistrelle (Pipistrellus pip…)     38     412
+  PIPPYG    Soprano pipistrelle (Pipistrellus py…)     21     198
+  MYODAU    Daubenton's myotis (Myotis daubenton…)      4      17
+───────────────────────────────────────────────────────────────
+```
+
+Dubious passes are excluded from the summary counts.
 
 ## Output files
 

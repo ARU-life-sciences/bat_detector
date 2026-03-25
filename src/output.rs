@@ -273,31 +273,39 @@ pub fn write_csv(
     let out_path = format!("{}_detections.csv", stem);
     let file = std::fs::File::create(&out_path)?;
     let mut w = std::io::BufWriter::new(file);
+    writeln!(w, "{}", CSV_HEADER)?;
+    write_csv_rows(&mut w, path, passes, 0)?;
 
+    println!("Detection CSV saved to:     {}", out_path);
+    Ok(())
+}
+
+const CSV_HEADER: &str = "filename,date,time,pass,start_s,end_s,duration_ms,\
+    n_pulses,n_extra,mean_peak_khz,peak_hz_std_khz,freq_low_khz,freq_high_khz,\
+    bandwidth_khz,cf_tail_ratio,rep_rate_hz,is_cf,\
+    mean_energy_db,peak_energy_db,code,species,notes,dubious,confidence";
+
+/// Write CSV rows for one file's passes into an already-open writer.
+/// Pass indices start at `index_offset + 1`.
+fn write_csv_rows<W: std::io::Write>(
+    w: &mut W,
+    path: &str,
+    passes: &[PassInfo],
+    index_offset: usize,
+) -> std::io::Result<()> {
     let (date, time) = parse_stem_datetime(path);
     let filename = std::path::Path::new(path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(path);
-
-    writeln!(
-        w,
-        "filename,date,time,pass,start_s,end_s,duration_ms,\
-         n_pulses,n_extra,mean_peak_khz,peak_hz_std_khz,freq_low_khz,freq_high_khz,\
-         bandwidth_khz,cf_tail_ratio,rep_rate_hz,is_cf,\
-         mean_energy_db,peak_energy_db,code,species,notes,dubious,confidence"
-    )?;
-
     for (i, p) in passes.iter().enumerate() {
-        // Species and notes can contain commas — wrap in double quotes.
         let species_quoted = format!("\"{}\"", p.species.replace('"', "\"\""));
         let notes_quoted   = format!("\"{}\"", p.notes.replace('"', "\"\""));
         writeln!(
             w,
             "{},{},{},{},{:.3},{:.3},{:.0},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.2},{},{:.2},{:.2},{},{},{},{},{:.2}",
-            filename,
-            date, time,
-            i + 1,
+            filename, date, time,
+            index_offset + i + 1,
             p.start_sec, p.end_sec,
             (p.end_sec - p.start_sec) * 1000.0,
             p.n_pulses, p.n_extra,
@@ -311,14 +319,33 @@ pub fn write_csv(
             p.is_cf,
             p.mean_energy_db, p.peak_energy_db,
             p.code,
-            species_quoted,
-            notes_quoted,
+            species_quoted, notes_quoted,
             p.dubious,
             p.confidence(),
         )?;
     }
+    Ok(())
+}
 
-    println!("Detection CSV saved to:     {}", out_path);
+/// Write one aggregated `survey.csv` inside `dir` covering all files' passes.
+/// Pass indices run continuously across files (1, 2, 3 … N).
+pub fn write_survey_csv(
+    dir: &str,
+    file_passes: &[(String, Vec<PassInfo>)],
+) -> std::io::Result<()> {
+    let out_path = std::path::Path::new(dir).join("survey.csv");
+    let file = std::fs::File::create(&out_path)?;
+    let mut w = std::io::BufWriter::new(file);
+
+    writeln!(w, "{}", CSV_HEADER)?;
+
+    let mut offset = 0usize;
+    for (path, passes) in file_passes {
+        write_csv_rows(&mut w, path, passes, offset)?;
+        offset += passes.len();
+    }
+
+    println!("Survey CSV saved to:        {}", out_path.display());
     Ok(())
 }
 

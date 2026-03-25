@@ -5,7 +5,7 @@ mod output;
 
 use hound::WavReader;
 
-use output::{CallGroupInfo, PeakInfo};
+use output::{CallGroupInfo, PeakInfo, PassInfo};
 
 const BAT_FREQ_LOW_HZ: f32 = 20_000.0;
 const BAT_FREQ_HIGH_HZ: f32 = 120_000.0;
@@ -43,7 +43,114 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let path = args
         .iter()
         .find(|a| !a.starts_with('-'))
-        .ok_or("Usage: bat_detector [--output] <file.wav>")?;
+        .ok_or("Usage: bat_detector [--output] <file.wav | directory>")?;
+
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("Cannot access '{}': {}", path, e))?;
+
+    if meta.is_dir() {
+        run_batch(path, force_output)
+    } else {
+        process_file(path, force_output).map(|_| ())
+    }
+}
+
+// ── Batch directory mode ───────────────────────────────────────────────────────
+
+fn run_batch(dir: &str, force_output: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // Collect all WAV files directly inside `dir` (non-recursive), sorted by name.
+    let mut wav_files: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| format!("Cannot read directory '{}': {}", dir, e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter(|e| e.file_name().to_string_lossy().to_lowercase().ends_with(".wav"))
+        .map(|e| e.path().to_string_lossy().into_owned())
+        .collect();
+    wav_files.sort();
+
+    if wav_files.is_empty() {
+        println!("{}: no WAV files found", dir);
+        return Ok(());
+    }
+
+    eprintln!("Batch: {} WAV files in '{}'", wav_files.len(), dir);
+
+    let mut all_passes: Vec<(String, Vec<PassInfo>)> = Vec::new();
+    let mut n_with_bats = 0usize;
+
+    for path in &wav_files {
+        match process_file(path, force_output) {
+            Ok(passes) => {
+                if !passes.is_empty() {
+                    n_with_bats += 1;
+                }
+                all_passes.push((path.clone(), passes));
+            }
+            Err(e) => eprintln!("  skipping '{}': {}", path, e),
+        }
+    }
+
+    output::write_survey_csv(dir, &all_passes)
+        .map_err(|e| format!("Failed to write survey CSV: {}", e))?;
+
+    print_batch_summary(&all_passes, wav_files.len(), n_with_bats);
+
+    Ok(())
+}
+
+fn print_batch_summary(
+    all_passes: &[(String, Vec<PassInfo>)],
+    n_files: usize,
+    n_with_bats: usize,
+) {
+    use std::collections::HashMap;
+
+    // Accumulate per-species pass and pulse counts (dubious passes excluded).
+    let mut by_species: HashMap<(&str, &str), (usize, usize)> = HashMap::new();
+    for (_, passes) in all_passes {
+        for pass in passes {
+            if !pass.dubious {
+                let e = by_species.entry((pass.code, pass.species)).or_default();
+                e.0 += 1;
+                e.1 += pass.n_pulses;
+            }
+        }
+    }
+
+    println!("\n── Batch summary ──────────────────────────────────────────────");
+    println!(
+        "  Files processed : {}  ({} with bat activity)",
+        n_files, n_with_bats
+    );
+
+    if by_species.is_empty() {
+        println!("  No bat detections.");
+        println!("───────────────────────────────────────────────────────────────");
+        return;
+    }
+
+    let mut rows: Vec<_> = by_species.iter().collect();
+    // Sort descending by pass count, then alphabetically by species name.
+    rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.1.cmp(b.0.1)));
+
+    println!();
+    println!("  {:<8}  {:<38}  {:>6}  {:>7}", "Code", "Species", "Passes", "Pulses");
+    println!("  {}", "─".repeat(64));
+    for ((code, species), (passes, pulses)) in &rows {
+        println!("  {:<8}  {:<38}  {:>6}  {:>7}", code, species, passes, pulses);
+    }
+    println!("───────────────────────────────────────────────────────────────");
+}
+
+// ── Single-file processing ─────────────────────────────────────────────────────
+
+/// Process one WAV file: detect, classify, write per-file outputs (CSV, PNG, HTML).
+/// Returns the list of species passes found (empty when no bats detected and
+/// `force_output` is false).
+fn process_file(
+    path: &str,
+    force_output: bool,
+) -> Result<Vec<PassInfo>, Box<dyn std::error::Error>> {
     let stem = path.trim_end_matches(".wav");
 
     // ── Load WAV ──────────────────────────────────────────────────────────────
@@ -103,7 +210,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if groups.is_empty() {
         println!("{}: NO BATS DETECTED", path);
         if !force_output {
-            return Ok(());
+            return Ok(vec![]);
         }
     }
 
@@ -160,9 +267,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut passes = output::compute_passes(&calls, PASS_GAP);
 
     // ── Mark dubious: single-pulse passes nested inside a larger pass ─────────
-    // A pass is dubious when it falls entirely within another pass that has more
-    // pulses (i.e. is more reliable).  This catches single-pulse mis-identifications
-    // produced by, e.g., one ambiguous frame inside an ongoing pipistrelle sequence.
     let n_passes = passes.len();
     for i in 0..n_passes {
         if passes[i].n_pulses != 1 { continue; }
@@ -177,26 +281,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // ── Local search: look for sub-threshold pulses near single-pulse passes ──
-    // For each non-dubious single-pulse pass, scan ±SEARCH_SECS in the spectrogram
-    // at the pass's characteristic frequency.  Any additional pulses found at
-    // ≥ LOCAL_SEARCH_THRESH × detected_energy are counted in n_extra, giving the
-    // table a richer picture of how isolated the detection really is.
+    // ── Local search: sub-threshold pulses near single-pulse passes ───────────
     for i in 0..passes.len() {
         if passes[i].n_pulses != 1 || passes[i].dubious { continue; }
-        let peak_hz   = passes[i].mean_peak_hz;
-        let pass_spe  = passes[i].species;
-        let pass_s    = passes[i].start_sec;
-        let pass_e    = passes[i].end_sec;
+        let peak_hz  = passes[i].mean_peak_hz;
+        let pass_spe = passes[i].species;
+        let pass_s   = passes[i].start_sec;
+        let pass_e   = passes[i].end_sec;
 
-        // Find the originating call group
         let Some(call) = calls.iter().find(|c| {
             c.peaks.iter().any(|p| p.species == pass_spe)
                 && c.start_sec <= pass_e + 0.1
                 && c.end_sec   >= pass_s - 0.1
         }) else { continue };
 
-        // Mean band energy over detected windows in the call group
         let band_lo = ((peak_hz - SEARCH_BAND_HZ).max(0.0) / hz_per_bin) as usize;
         let band_hi = (((peak_hz + SEARCH_BAND_HZ) / hz_per_bin).round() as usize)
             .min(freq_bins - 1);
@@ -228,7 +326,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // ── Per-pass energy (dB re FFT² units, comparable across files) ──────────
     for pass in &mut passes {
         let win_start = (pass.start_sec * sample_rate / WINDOW_SIZE as f32) as usize;
-        let win_end   = ((pass.end_sec   * sample_rate / WINDOW_SIZE as f32) as usize)
+        let win_end   = ((pass.end_sec * sample_rate / WINDOW_SIZE as f32) as usize)
             .min(n_windows - 1);
         let mut energy_sum = 0.0f32;
         let mut peak_energy = 0.0f32;
@@ -312,5 +410,5 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )
     .map_err(|e| format!("Failed to write HTML for '{}': {}", stem, e))?;
 
-    Ok(())
+    Ok(passes)
 }
