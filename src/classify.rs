@@ -206,6 +206,7 @@ mod tests {
             rep_rate: 10.0,
             is_cf: true,
             mean_call_duration_ms: 40.0, // horseshoe bats: long CF calls
+            n_pulses: 1,
         }
     }
 
@@ -220,6 +221,7 @@ mod tests {
             rep_rate,
             is_cf: false,
             mean_call_duration_ms: 5.0,
+            n_pulses: 1,
         }
     }
 
@@ -235,6 +237,7 @@ mod tests {
             rep_rate,
             is_cf: false,
             mean_call_duration_ms: 5.0,
+            n_pulses: 1,
         }
     }
 

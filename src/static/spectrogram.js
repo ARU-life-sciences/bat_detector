@@ -111,22 +111,68 @@ function repaint() {
   // Draw the crosshair and species label while the cursor is inside the
   // spectrogram and no drag is in progress (dragging uses render() instead).
   if (mousePos && !drag && !selDrag) {
-    const { col, row, sp, co } = mousePos;
+    const { col, row, labels } = mousePos;
+
     // Dashed white crosshair lines — vertical (time) and horizontal (frequency).
-    ct.strokeStyle = 'rgba(255,255,255,0.5)'; ct.lineWidth = 1; ct.setLineDash([3, 3]);
-    ct.beginPath(); ct.moveTo(FAW + col, 0); ct.lineTo(FAW + col, MH + h); ct.stroke();
-    ct.beginPath(); ct.moveTo(FAW, MH + row); ct.lineTo(FAW + w, MH + row); ct.stroke();
+    ct.strokeStyle = 'rgba(255,255,255,0.5)';
+    ct.lineWidth = 1;
+    ct.setLineDash([3, 3]);
+    ct.beginPath();
+    ct.moveTo(FAW + col, 0);
+    ct.lineTo(FAW + col, MH + h);
+    ct.stroke();
+    ct.beginPath();
+    ct.moveTo(FAW, MH + row);
+    ct.lineTo(FAW + w, MH + row);
+    ct.stroke();
     ct.setLineDash([]);
-    // Species label bubble — only shown when the cursor is inside a detected pass.
-    if (sp) {
-      const label = co + ' \u00b7 ' + sp;  // e.g. "PIPPYG · Soprano pipistrelle"
+
+    // Multi-line species label bubble.
+    if (labels && labels.length) {
       ct.font = '11px monospace';
-      const tw = ct.measureText(label).width;
-      // Position to the right of the cursor, but clamp so it stays on-canvas.
-      const bx = Math.min(FAW + col + 14, FAW + w - tw - 10);
-      const by = Math.max(MH + row - 10, MH + 15);
-      ct.fillStyle = 'rgba(0,0,20,0.78)'; ct.fillRect(bx - 4, by - 13, tw + 8, 17);
-      ct.fillStyle = '#ffdd88'; ct.textAlign = 'left'; ct.fillText(label, bx, by);
+      ct.textAlign = 'left';
+      ct.textBaseline = 'top';
+
+      const lineH = 14;
+      const padX = 6;
+      const padY = 5;
+      const gap = 2;
+
+      let maxW = 0;
+      for (const label of labels) {
+        maxW = Math.max(maxW, ct.measureText(label).width);
+      }
+
+      const boxW = Math.ceil(maxW) + padX * 2;
+      const boxH = labels.length * lineH + padY * 2 + (labels.length - 1) * gap;
+
+      let bx = FAW + col + 14;
+      let by = MH + row - 10;
+
+      // Clamp horizontally.
+      if (bx + boxW > FAW + w - 4) bx = FAW + w - boxW - 4;
+      if (bx < FAW + 4) bx = FAW + 4;
+
+      // Clamp vertically.
+      if (by + boxH > MH + h - 4) by = MH + h - boxH - 4;
+      if (by < MH + 4) by = MH + 4;
+
+      // Background.
+      ct.fillStyle = 'rgba(0,0,20,0.82)';
+      ct.fillRect(bx, by, boxW, boxH);
+
+      // Border.
+      ct.strokeStyle = 'rgba(255,221,136,0.45)';
+      ct.lineWidth = 1;
+      ct.strokeRect(bx + 0.5, by + 0.5, boxW - 1, boxH - 1);
+
+      // One line per overlapping species.
+      ct.fillStyle = '#ffdd88';
+      let ty = by + padY;
+      for (const label of labels) {
+        ct.fillText(label, bx + padX, ty);
+        ty += lineH + gap;
+      }
     }
   }
 }
@@ -334,22 +380,36 @@ window.addEventListener('mousemove', function(e) {
     // Convert the stored byte value back to dB: byte = (db+80)/80*255, so db = byte/255*80−80.
     const bv = D.bytes[wi * D.nB + bi];
     const db = bv > 0 ? (bv / 255 * 80 - 80).toFixed(1) : '\u221280';
-    // Look up which pass (if any) the current time falls inside.
-    // Skip dubious passes — they are absorbed into a dominant pass and should
-    // not override its label in the hover tooltip.
-    // When multiple non-dubious passes overlap, prefer the shortest (most specific).
-    let sp = '', co = '', bestDur = Infinity;
+    // Collect all non-dubious passes covering the cursor time.
+    const hits = [];
     for (const p of D.passes) {
       if (p.dub) continue;
       if (tsec >= p.t0 && tsec <= p.t1) {
-        const dur = p.t1 - p.t0;
-        if (dur < bestDur) { bestDur = dur; sp = p.sp; co = p.co; }
+        hits.push(p);
       }
     }
-    // Update the status bar below the canvas.
+
+    // Optional: sort so shorter/more specific passes appear first.
+    hits.sort((a, b) => (a.t1 - a.t0) - (b.t1 - b.t0));
+
+    // Deduplicate labels in case the same species appears more than once.
+    const labels = [];
+    const seen = new Set();
+    for (const p of hits) {
+      const label = p.co + ' · ' + p.sp;
+      if (!seen.has(label)) {
+        seen.add(label);
+        labels.push(label);
+      }
+    }
+
     document.getElementById('info').textContent =
-      't = ' + tsec.toFixed(3) + ' s\u2003|\u2003f = ' + fkhz.toFixed(2) + ' kHz\u2003|\u2003' + db + ' dB' + (sp ? '\u2003|\u2003' + co + ' \u00b7 ' + sp : '');
-    mousePos = { col, row, sp, co };
+      't = ' + tsec.toFixed(3) +
+      ' s | f = ' + fkhz.toFixed(2) +
+      ' kHz | ' + db + ' dB' +
+      (labels.length ? ' | ' + labels.join(' + ') : '');
+
+    mousePos = { col, row, labels };
     repaint();
   } else {
     // Cursor has left the spectrogram area — clear crosshair.

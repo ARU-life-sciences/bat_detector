@@ -39,7 +39,6 @@ pub struct CallGroupInfo {
     pub end_win: usize,
     pub start_sec: f32,
     pub end_sec: f32,
-    pub duration_ms: f32,
     pub peaks: Vec<PeakInfo>,
 }
 
@@ -124,6 +123,7 @@ struct PassSample {
     peak_hz: f32, freq_low_hz: f32, freq_high_hz: f32,
     bandwidth_hz: f32, cf_tail_ratio: f32, rep_rate: f32, is_cf: bool,
     mean_call_duration_ms: f32,
+    n_pulses: usize,
     code: &'static str,
     notes: &'static str,
 }
@@ -135,7 +135,14 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
         std::collections::HashMap::new();
 
     for call in calls {
+        // One PassSample per species per call group: use the first (dominant-frequency)
+        // peak and skip any further peaks of the same species from the same group.
+        // Without this, a call with a harmonic that classifies as the same species
+        // would produce two PassSamples with identical time ranges, causing the
+        // pulse count (and all averaged features) to be doubled in the merged pass.
+        let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
         for peak in &call.peaks {
+            if !seen.insert(peak.species) { continue; }
             by_species.entry(peak.species).or_default().push(PassSample {
                 start: call.start_sec,
                 end: call.end_sec,
@@ -147,6 +154,7 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                 rep_rate: peak.features.rep_rate,
                 is_cf: peak.features.is_cf,
                 mean_call_duration_ms: peak.features.mean_call_duration_ms,
+                n_pulses: peak.features.n_pulses,
                 code: peak.code,
                 notes: peak.notes,
             });
@@ -160,8 +168,10 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
 
         // Running accumulators for the current pass group.
         // Notes are constant per species — carry the first sample's value.
+        // `count` = call-group count, used as the averaging denominator for all means.
+        // `pulse_count` = sum of individual pulses across those groups → n_pulses in PassInfo.
         macro_rules! flush {
-            ($cs:expr, $ce:expr, $sums:expr, $n:expr, $code:expr, $notes:expr) => {{
+            ($cs:expr, $ce:expr, $sums:expr, $n:expr, $pc:expr, $code:expr, $notes:expr) => {{
                 let n = $n as f32;
                 let mean_ph = $sums.0 / n;
                 // Variance via E[x²] − E[x]²; .max(0) guards floating-point rounding.
@@ -170,7 +180,7 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                     species,
                     start_sec: $cs,
                     end_sec: $ce,
-                    n_pulses: $n,
+                    n_pulses: $pc,
                     n_extra: 0,
                     mean_peak_hz:           mean_ph,
                     peak_hz_std,
@@ -200,6 +210,7 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                         s0.bandwidth_hz, s0.cf_tail_ratio, s0.rep_rate, s0.is_cf,
                         s0.peak_hz * s0.peak_hz, s0.mean_call_duration_ms);
         let mut count = 1usize;
+        let mut pulse_count = s0.n_pulses;
 
         for s in &items[1..] {
             if s.start - cur_end <= max_gap_sec {
@@ -214,8 +225,9 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                 sums.7 += s.peak_hz * s.peak_hz;
                 sums.8 += s.mean_call_duration_ms;
                 count += 1;
+                pulse_count += s.n_pulses;
             } else {
-                flush!(cur_start, cur_end, sums, count, cur_code, cur_notes);
+                flush!(cur_start, cur_end, sums, count, pulse_count, cur_code, cur_notes);
                 cur_start = s.start;
                 cur_end   = s.end;
                 cur_code  = s.code;
@@ -224,9 +236,10 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                         s.bandwidth_hz, s.cf_tail_ratio, s.rep_rate, s.is_cf,
                         s.peak_hz * s.peak_hz, s.mean_call_duration_ms);
                 count = 1;
+                pulse_count = s.n_pulses;
             }
         }
-        flush!(cur_start, cur_end, sums, count, cur_code, cur_notes);
+        flush!(cur_start, cur_end, sums, count, pulse_count, cur_code, cur_notes);
     }
 
     passes.sort_by(|a, b| a.start_sec.partial_cmp(&b.start_sec).unwrap());
@@ -439,6 +452,7 @@ fn write_base64<W: std::io::Write>(w: &mut W, data: &[u8]) -> std::io::Result<()
     Ok(())
 }
 
+#[cfg(test)]
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -467,6 +481,7 @@ fn js_str(s: &str) -> String {
 /// Write a self-contained interactive HTML spectrogram viewer.
 ///
 /// `spec_bytes` is window-major (`bytes[w * freq_bins + b]`), values 0–255.
+#[allow(clippy::too_many_arguments)]
 pub fn write_html(
     stem: &str,
     sample_rate: f32,
@@ -488,18 +503,18 @@ pub fn write_html(
 
     // ── Head ─────────────────────────────────────────────────────────────────
     w.write_all(b"<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n")?;
-    write!(w, "<title>Bat Spectrogram \u{2014} {}</title>\n", stem)?;
+    writeln!(w, "<title>Bat Spectrogram \u{2014} {}</title>", stem)?;
     write!(w, "<style>\n{}</style>\n", CSS)?;
     w.write_all(b"</head>\n<body>\n")?;
 
     // ── Header ───────────────────────────────────────────────────────────────
-    write!(w, "<h1>Bat Spectrogram \u{2014} {}</h1>\n", stem)?;
-    write!(
+    writeln!(w, "<h1>Bat Spectrogram \u{2014} {}</h1>", stem)?;
+    writeln!(
         w,
         "<p class=\"meta\">Sample rate: {} Hz &nbsp;|&nbsp; \
          Duration: {:.1} s &nbsp;|&nbsp; \
          {} windows ({}-point FFT) &nbsp;|&nbsp; \
-         {} pulse(s) &rarr; {} pass(es)</p>\n",
+         {} pulse(s) &rarr; {} pass(es)</p>",
         sample_rate as u32, duration_sec, n_windows, window_size,
         n_pulses, passes.len(),
     )?;
@@ -555,7 +570,7 @@ pub fn write_html(
              font-size:10px;background:{};color:#eee\">{:.0}%</span>",
             conf_color, conf * 100.0
         );
-        write!(
+        writeln!(
             w,
             "<tr data-t0=\"{:.3}\" data-t1=\"{:.3}\" class=\"{}\">\
              <td>{}</td>\
@@ -566,7 +581,7 @@ pub fn write_html(
              <td><code style=\"color:#adf\">{}</code></td>\
              <td>{}</td>\
              <td>{}</td>\
-             </tr>\n",
+             </tr>",
             pass.start_sec, pass.end_sec,
             row_class,
             i + 1,
@@ -584,9 +599,9 @@ pub fn write_html(
     // ── Script: dynamic data ──────────────────────────────────────────────────
     w.write_all(b"<script>\n")?;
 
-    write!(
+    writeln!(
         w,
-        "const D={{nW:{},nB:{},sr:{},ws:{},hpb:{:.6}}};\n",
+        "const D={{nW:{},nB:{},sr:{},ws:{},hpb:{:.6}}};",
         n_windows, freq_bins, sample_rate as u32, window_size, hz_per_bin
     )?;
 

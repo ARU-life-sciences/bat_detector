@@ -6,7 +6,7 @@ mod output;
 use hound::WavReader;
 use rayon::prelude::*;
 
-use output::{CallGroupInfo, PeakInfo, PassInfo};
+use output::{CallGroupInfo, PassInfo, PeakInfo};
 
 const BAT_FREQ_LOW_HZ: f32 = 20_000.0;
 const BAT_FREQ_HIGH_HZ: f32 = 120_000.0;
@@ -49,6 +49,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let force_output = args.iter().any(|a| a == "--output");
+    let diagnose = args.iter().any(|a| a == "--diagnose");
 
     // --threshold <value>  overrides DETECTION_THRESHOLD at runtime.
     let threshold = if let Some(pos) = args.iter().position(|a| a == "--threshold") {
@@ -60,30 +61,59 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         DETECTION_THRESHOLD
     };
 
+    // --ratio <value>  overrides SPECTRAL_RATIO_MIN at runtime.
+    // Lower values (e.g. 1.0) pass calls in recordings with broadband noise.
+    let ratio = if let Some(pos) = args.iter().position(|a| a == "--ratio") {
+        args.get(pos + 1)
+            .ok_or("--ratio requires a value")?
+            .parse::<f32>()
+            .map_err(|_| "--ratio value must be a number (e.g. --ratio 1.0)")?
+    } else {
+        detection::SPECTRAL_RATIO_MIN_DEFAULT
+    };
+
+    let threshold_val_pos = args.iter().position(|a| a == "--threshold").map(|p| p + 1);
+    let ratio_val_pos = args.iter().position(|a| a == "--ratio").map(|p| p + 1);
     let path = args
         .iter()
-        .find(|a| !a.starts_with('-'))
-        .ok_or("Usage: bat_detector [--output] [--threshold <n>] <file.wav | directory>")?;
+        .enumerate()
+        .find(|(i, a)| {
+            !a.starts_with('-')
+                && Some(*i) != threshold_val_pos
+                && Some(*i) != ratio_val_pos
+        })
+        .map(|(_, a)| a)
+        .ok_or("Usage: bat_detector [--output] [--threshold <n>] [--ratio <n>] [--diagnose] <file.wav | directory>")?;
 
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("Cannot access '{}': {}", path, e))?;
+    let meta = std::fs::metadata(path).map_err(|e| format!("Cannot access '{}': {}", path, e))?;
 
     if meta.is_dir() {
-        run_batch(path, force_output, threshold)
+        run_batch(path, force_output, threshold, ratio, diagnose)
     } else {
-        process_file(path, force_output, threshold, false).map(|_| ())
+        process_file(path, force_output, threshold, ratio, false, diagnose).map(|_| ())
     }
 }
 
 // ── Batch directory mode ───────────────────────────────────────────────────────
 
-fn run_batch(dir: &str, force_output: bool, threshold: f32) -> Result<(), Box<dyn std::error::Error>> {
+fn run_batch(
+    dir: &str,
+    force_output: bool,
+    threshold: f32,
+    ratio: f32,
+    diagnose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Collect all WAV files directly inside `dir` (non-recursive), sorted by name.
     let mut wav_files: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| format!("Cannot read directory '{}': {}", dir, e))?
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .filter(|e| e.file_name().to_string_lossy().to_lowercase().ends_with(".wav"))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .ends_with(".wav")
+        })
         .map(|e| e.path().to_string_lossy().into_owned())
         .collect();
     wav_files.sort();
@@ -94,7 +124,12 @@ fn run_batch(dir: &str, force_output: bool, threshold: f32) -> Result<(), Box<dy
     }
 
     let n_threads = rayon::current_num_threads();
-    eprintln!("Batch: {} WAV files in '{}' ({} threads)", wav_files.len(), dir, n_threads);
+    eprintln!(
+        "Batch: {} WAV files in '{}' ({} threads)",
+        wav_files.len(),
+        dir,
+        n_threads
+    );
 
     // Process files in parallel; results are collected in original filename order.
     // Per-pass detail lines are suppressed (quiet=true) — interleaved output from
@@ -102,7 +137,7 @@ fn run_batch(dir: &str, force_output: bool, threshold: f32) -> Result<(), Box<dy
     let results: Vec<(String, Result<Vec<PassInfo>, String>)> = wav_files
         .par_iter()
         .map(|path| {
-            let r = process_file(path, force_output, threshold, true)
+            let r = process_file(path, force_output, threshold, ratio, true, diagnose)
                 .map_err(|e| e.to_string());
             (path.clone(), r)
         })
@@ -114,7 +149,9 @@ fn run_batch(dir: &str, force_output: bool, threshold: f32) -> Result<(), Box<dy
     for (path, result) in results {
         match result {
             Ok(passes) => {
-                if !passes.is_empty() { n_with_bats += 1; }
+                if !passes.is_empty() {
+                    n_with_bats += 1;
+                }
                 all_passes.push((path, passes));
             }
             Err(e) => eprintln!("  skipping '{}': {}", path, e),
@@ -129,11 +166,7 @@ fn run_batch(dir: &str, force_output: bool, threshold: f32) -> Result<(), Box<dy
     Ok(())
 }
 
-fn print_batch_summary(
-    all_passes: &[(String, Vec<PassInfo>)],
-    n_files: usize,
-    n_with_bats: usize,
-) {
+fn print_batch_summary(all_passes: &[(String, Vec<PassInfo>)], n_files: usize, n_with_bats: usize) {
     use std::collections::HashMap;
 
     // Accumulate per-species pass and pulse counts (dubious passes excluded).
@@ -175,10 +208,19 @@ fn print_batch_summary(
     };
 
     println!();
-    println!("  {:<8}  {:<38}  {:>6}  {:>7}", "Code", "Species", "Passes", "Pulses");
+    println!(
+        "  {:<8}  {:<38}  {:>6}  {:>7}",
+        "Code", "Species", "Passes", "Pulses"
+    );
     println!("  {}", "─".repeat(64));
     for ((code, species), (passes, pulses)) in &rows {
-        println!("  {:<8}  {:<38}  {:>6}  {:>7}", code, truncate(species), passes, pulses);
+        println!(
+            "  {:<8}  {:<38}  {:>6}  {:>7}",
+            code,
+            truncate(species),
+            passes,
+            pulses
+        );
     }
     println!("───────────────────────────────────────────────────────────────");
 }
@@ -192,7 +234,9 @@ fn process_file(
     path: &str,
     force_output: bool,
     threshold: f32,
+    ratio: f32,
     quiet: bool,
+    diagnose: bool,
 ) -> Result<Vec<PassInfo>, Box<dyn std::error::Error>> {
     let stem = path.trim_end_matches(".wav");
 
@@ -237,14 +281,14 @@ fn process_file(
     let n_windows = spectrogram.len();
 
     // ── Adaptive bat-window detection ─────────────────────────────────────────
-    let noise_half_window =
-        (NOISE_WINDOW_SECS * sample_rate / WINDOW_SIZE as f32).round() as usize;
+    let noise_half_window = (NOISE_WINDOW_SECS * sample_rate / WINDOW_SIZE as f32).round() as usize;
     let detected = detection::detect_bat_windows(
         &spectrogram,
         bin_low,
         bin_high,
         threshold,
         noise_half_window,
+        ratio,
     );
 
     // ── Call grouping ─────────────────────────────────────────────────────────
@@ -254,14 +298,6 @@ fn process_file(
         println!("{}: NO BATS DETECTED", path);
         if !force_output {
             return Ok(vec![]);
-        }
-    }
-
-    // ── Build grouped-detection mask (windows inside any call group) ──────────
-    let mut grouped_detected = vec![false; n_windows];
-    for &(s, e) in &groups {
-        for i in s..=e {
-            grouped_detected[i] = true;
         }
     }
 
@@ -289,7 +325,12 @@ fn process_file(
             .into_iter()
             .map(|f| {
                 let (code, species, notes) = classify::classify_british(&f);
-                PeakInfo { features: f, code, species, notes }
+                PeakInfo {
+                    features: f,
+                    code,
+                    species,
+                    notes,
+                }
             })
             .collect();
 
@@ -301,19 +342,31 @@ fn process_file(
             end_win: end,
             start_sec,
             end_sec,
-            duration_ms: (end_sec - start_sec) * 1000.0,
             peaks,
         });
     }
 
     // ── Bandwidth gate: reject narrowband interference ────────────────────────
-    // Genuine FM bat calls sweep across at least a few kHz, giving a broad mean
-    // spectrum.  Electronic tones, machinery harmonics, and similar narrowband
-    // artefacts concentrate energy in < 3 kHz and are dropped here.  CF calls
-    // (horseshoe bats, is_cf = true) are exempt — they are intentionally narrow.
+    // Genuine FM bat calls sweep across several kHz.  The −20 dB frequency range
+    // (freq_high − freq_low) captures the full sweep extent even for short call
+    // groups where the mean spectrum is dominated by the CF tail.  The −10 dB
+    // bandwidth is too conservative for those cases.  CF calls (horseshoe bats,
+    // is_cf = true) are exempt — they are intentionally narrowband.
     calls.retain(|c| {
-        c.peaks.iter().any(|p| p.features.is_cf || p.features.bandwidth_hz >= MIN_FM_BANDWIDTH_HZ)
+        c.peaks.iter().any(|p| {
+            p.features.is_cf
+                || (p.features.freq_high_hz - p.features.freq_low_hz) >= MIN_FM_BANDWIDTH_HZ
+        })
     });
+
+    // ── Build grouped-detection mask from all raw groups ─────────────────────
+    // Built from `groups` (pre-bandwidth-gate) so every detected window appears
+    // highlighted in the spectrogram.  The bandwidth gate only controls which
+    // groups receive a table row; it does not suppress the visual highlight.
+    let mut grouped_detected = vec![false; n_windows];
+    for &(s, e) in &groups {
+        grouped_detected[s..=e].fill(true);
+    }
 
     // ── Aggregate into species passes ─────────────────────────────────────────
     let mut passes = output::compute_passes(&calls, PASS_GAP);
@@ -321,9 +374,17 @@ fn process_file(
     // ── Mark dubious: single-pulse passes nested inside a larger pass ─────────
     let n_passes = passes.len();
     for i in 0..n_passes {
-        if passes[i].n_pulses != 1 { continue; }
+        if passes[i].n_pulses != 1 {
+            continue;
+        }
         for j in 0..n_passes {
-            if i == j { continue; }
+            if i == j {
+                continue;
+            }
+            // only suppress passes when they are the same species
+            if passes[i].species != passes[j].species {
+                continue;
+            }
             let (pi_s, pi_e) = (passes[i].start_sec, passes[i].end_sec);
             let (pj_s, pj_e, pj_n) = (passes[j].start_sec, passes[j].end_sec, passes[j].n_pulses);
             if pj_n > 1 && pi_s >= pj_s - 0.1 && pi_e <= pj_e + 0.1 {
@@ -344,11 +405,22 @@ fn process_file(
     // extensions without the in-progress modifications affecting the comparisons.
     let mut absorb: Vec<(usize, usize)> = Vec::new();
     for i in 0..n_passes {
-        if passes[i].dubious { continue; }
+        if passes[i].dubious {
+            continue;
+        }
         let (pi_s, pi_e, pi_n) = (passes[i].start_sec, passes[i].end_sec, passes[i].n_pulses);
         let pi_dur = (pi_e - pi_s).max(1e-6);
         for j in 0..n_passes {
-            if i == j || passes[j].n_pulses < 2 * pi_n { continue; }
+            // only suppress passes when they are the same species
+            if i == j {
+                continue;
+            }
+            if passes[i].species != passes[j].species {
+                continue;
+            }
+            if passes[j].n_pulses < 2 * pi_n {
+                continue;
+            }
             let (pj_s, pj_e) = (passes[j].start_sec, passes[j].end_sec);
             let overlap = (pi_e.min(pj_e) - pi_s.max(pj_s)).max(0.0);
             if overlap / pi_dur >= 0.5 {
@@ -360,28 +432,36 @@ fn process_file(
     }
     for (i, j) in absorb {
         let (pi_s, pi_e, pi_n) = (passes[i].start_sec, passes[i].end_sec, passes[i].n_pulses);
-        if pi_s < passes[j].start_sec { passes[j].start_sec = pi_s; }
-        if pi_e > passes[j].end_sec   { passes[j].end_sec   = pi_e; }
+        if pi_s < passes[j].start_sec {
+            passes[j].start_sec = pi_s;
+        }
+        if pi_e > passes[j].end_sec {
+            passes[j].end_sec = pi_e;
+        }
         passes[j].n_pulses += pi_n;
     }
 
     // ── Local search: sub-threshold pulses near single-pulse passes ───────────
     for i in 0..passes.len() {
-        if passes[i].n_pulses != 1 || passes[i].dubious { continue; }
-        let peak_hz  = passes[i].mean_peak_hz;
+        if passes[i].n_pulses != 1 || passes[i].dubious {
+            continue;
+        }
+        let peak_hz = passes[i].mean_peak_hz;
         let pass_spe = passes[i].species;
-        let pass_s   = passes[i].start_sec;
-        let pass_e   = passes[i].end_sec;
+        let pass_s = passes[i].start_sec;
+        let pass_e = passes[i].end_sec;
 
         let Some(call) = calls.iter().find(|c| {
             c.peaks.iter().any(|p| p.species == pass_spe)
                 && c.start_sec <= pass_e + 0.1
-                && c.end_sec   >= pass_s - 0.1
-        }) else { continue };
+                && c.end_sec >= pass_s - 0.1
+        }) else {
+            continue;
+        };
 
         let band_lo = ((peak_hz - SEARCH_BAND_HZ).max(0.0) / hz_per_bin) as usize;
-        let band_hi = (((peak_hz + SEARCH_BAND_HZ) / hz_per_bin).round() as usize)
-            .min(freq_bins - 1);
+        let band_hi =
+            (((peak_hz + SEARCH_BAND_HZ) / hz_per_bin).round() as usize).min(freq_bins - 1);
         let n_band = (band_hi - band_lo + 1) as f32;
         let mut energy_sum = 0.0f32;
         let mut n_det = 0usize;
@@ -391,7 +471,9 @@ fn process_file(
                 n_det += 1;
             }
         }
-        if n_det == 0 { continue; }
+        if n_det == 0 {
+            continue;
+        }
         let det_energy = energy_sum / n_det as f32;
 
         let search_wins = (SEARCH_SECS * sample_rate / WINDOW_SIZE as f32) as usize;
@@ -400,21 +482,30 @@ fn process_file(
 
         let n_extra = detection::targeted_pulse_count(
             &spectrogram,
-            lo_win, hi_win,
-            call.start_win, call.end_win,
-            peak_hz, hz_per_bin, SEARCH_BAND_HZ,
-            det_energy, LOCAL_SEARCH_THRESH,
+            lo_win,
+            hi_win,
+            call.start_win,
+            call.end_win,
+            peak_hz,
+            hz_per_bin,
+            SEARCH_BAND_HZ,
+            det_energy,
+            LOCAL_SEARCH_THRESH,
         );
 
-        // Only credit the nearby pulses if no other non-dubious multi-pulse pass
-        // is already active in the same ±SEARCH_SECS window.  If another species
-        // is present the extra energy is theirs, not sub-threshold calls from
-        // this bat, and crediting it inflates the confidence score incorrectly.
+        // Only credit the nearby pulses if no other species' pass overlaps the
+        // ±SEARCH_SECS window.  Even a single-pulse pass of a different species
+        // is enough to disqualify: the frequency-band search may be picking up
+        // that species' pulses (which can be close in frequency), so we must not
+        // credit them as sub-threshold evidence for this bat.
         let search_t0 = pass_s - SEARCH_SECS;
         let search_t1 = pass_e + SEARCH_SECS;
         let other_bat_nearby = passes.iter().enumerate().any(|(j, p)| {
-            j != i && !p.dubious && p.n_pulses > 1
-                && p.start_sec < search_t1 && p.end_sec > search_t0
+            j != i
+                && !p.dubious
+                && p.species != pass_spe
+                && p.start_sec < search_t1
+                && p.end_sec > search_t0
         });
         passes[i].n_extra = if other_bat_nearby { 0 } else { n_extra };
     }
@@ -422,8 +513,8 @@ fn process_file(
     // ── Per-pass energy (dB re FFT² units, comparable across files) ──────────
     for pass in &mut passes {
         let win_start = (pass.start_sec * sample_rate / WINDOW_SIZE as f32) as usize;
-        let win_end   = ((pass.end_sec * sample_rate / WINDOW_SIZE as f32) as usize)
-            .min(n_windows - 1);
+        let win_end =
+            ((pass.end_sec * sample_rate / WINDOW_SIZE as f32) as usize).min(n_windows - 1);
         let mut energy_sum = 0.0f32;
         let mut peak_energy = 0.0f32;
         let mut n_det = 0usize;
@@ -432,14 +523,24 @@ fn process_file(
                 let e = spectrogram[w][bin_low..=bin_high].iter().sum::<f32>()
                     / (bin_high - bin_low + 1) as f32;
                 energy_sum += e;
-                if e > peak_energy { peak_energy = e; }
+                if e > peak_energy {
+                    peak_energy = e;
+                }
                 n_det += 1;
             }
         }
         if n_det > 0 {
             let mean_e = energy_sum / n_det as f32;
-            pass.mean_energy_db = if mean_e > 0.0 { 10.0 * mean_e.log10() } else { -120.0 };
-            pass.peak_energy_db = if peak_energy > 0.0 { 10.0 * peak_energy.log10() } else { -120.0 };
+            pass.mean_energy_db = if mean_e > 0.0 {
+                10.0 * mean_e.log10()
+            } else {
+                -120.0
+            };
+            pass.peak_energy_db = if peak_energy > 0.0 {
+                10.0 * peak_energy.log10()
+            } else {
+                -120.0
+            };
         }
     }
 
@@ -452,12 +553,20 @@ fn process_file(
                 String::new()
             };
             let flag = if pass.dubious {
-                if pass.n_pulses == 1 { " [dubious: nested]" } else { " [dubious: overlapping]" }
-            } else { "" };
+                if pass.n_pulses == 1 {
+                    " [dubious: nested]"
+                } else {
+                    " [dubious: overlapping]"
+                }
+            } else {
+                ""
+            };
             println!(
                 "{}: pass {} {:.1}–{:.1}s ({} pulse{}{}) → {} - {}{}",
-                path, i + 1,
-                pass.start_sec, pass.end_sec,
+                path,
+                i + 1,
+                pass.start_sec,
+                pass.end_sec,
                 pass.n_pulses,
                 if pass.n_pulses == 1 { "" } else { "s" },
                 extra,
@@ -489,12 +598,59 @@ fn process_file(
         })
         .collect();
 
+    // ── Diagnostic TSV (--diagnose) ───────────────────────────────────────────
+    if diagnose {
+        let diags = detection::detect_bat_windows_diag(
+            &spectrogram,
+            bin_low,
+            bin_high,
+            threshold,
+            noise_half_window,
+            ratio,
+            sample_rate,
+            WINDOW_SIZE,
+        );
+        let tsv_path = format!("{}_detection_diag.tsv", stem);
+        let mut f = std::fs::File::create(&tsv_path)
+            .map_err(|e| format!("Cannot create '{}': {}", tsv_path, e))?;
+        use std::io::Write as _;
+        writeln!(
+            f,
+            "time_s\tbat_max\tnoise_floor\tcond1_ratio\tbat_mean\tnonbat_mean\tcond2_ratio\tcond1_pass\tcond2_pass\tdetected"
+        )?;
+        for d in &diags {
+            writeln!(
+                f,
+                "{:.4}\t{:.6e}\t{:.6e}\t{:.4}\t{:.6e}\t{:.6e}\t{:.4}\t{}\t{}\t{}",
+                d.time_s,
+                d.bat_max,
+                d.noise_floor,
+                d.cond1_ratio,
+                d.bat_mean,
+                d.nonbat_mean,
+                d.cond2_ratio,
+                d.cond1_pass as u8,
+                d.cond2_pass as u8,
+                d.detected as u8,
+            )?;
+        }
+        eprintln!("Wrote diagnostic TSV: {}", tsv_path);
+    }
+
     // ── Outputs ───────────────────────────────────────────────────────────────
     output::write_csv(stem, path, &passes)
         .map_err(|e| format!("Failed to write CSV for '{}': {}", stem, e))?;
 
-    output::write_png(stem, &spec_bytes, &grouped_detected, n_windows, freq_bins, bin_low, bin_high)
-        .map_err(|e| format!("Failed to write PNG for '{}': {}", stem, e))?;
+    output::write_png(
+        stem,
+        &spec_bytes,
+        &grouped_detected,
+        n_windows,
+        freq_bins,
+        bin_low,
+        bin_high,
+    )
+    .map_err(|e| format!("Failed to write PNG for '{}': {}", stem, e))?;
 
     output::write_html(
         stem,

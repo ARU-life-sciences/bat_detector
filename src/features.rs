@@ -9,6 +9,8 @@ pub struct CallFeatures {
     /// Mean individual call duration in milliseconds.
     /// Estimated as (detected windows in group) / (pulses in group) × window_ms.
     pub mean_call_duration_ms: f32,
+    /// Number of individual pulses counted within this call group.
+    pub n_pulses: usize,
 }
 
 /// Find significant spectral peaks in `spectrum[bin_low..=bin_high]`.
@@ -66,6 +68,7 @@ fn find_peaks(
 /// `left_bound`/`right_bound` constrain bandwidth and frequency-range searches
 /// to this peak's territory (midpoints between adjacent peaks), preventing
 /// measurements from bleeding into a neighbouring species' signal.
+#[allow(clippy::too_many_arguments)]
 fn features_for_peak(
     mean_power: &[f32],
     spectrogram: &[Vec<f32>],
@@ -127,17 +130,19 @@ fn features_for_peak(
     let energies: Vec<f32> = (start..=end)
         .map(|w| spectrogram[w][rep_lo..=rep_hi].iter().sum::<f32>())
         .collect();
-    let mut n_pulses = 1usize;
+    let mut n_pulses = 0usize;
     let mut last_peak_idx = 0usize;
     for i in 1..energies.len().saturating_sub(1) {
         if energies[i] > energies[i - 1]
             && energies[i] > energies[i + 1]
-            && i >= last_peak_idx + min_sep_idx
+            && (n_pulses == 0 || i >= last_peak_idx + min_sep_idx)
         {
             n_pulses += 1;
             last_peak_idx = i;
         }
     }
+    // Always credit at least one pulse — the group exists because something was detected.
+    if n_pulses == 0 { n_pulses = 1; }
     let duration_sec = (end - start + 1) as f32 * window_size as f32 / sample_rate;
     let rep_rate = n_pulses as f32 / duration_sec;
 
@@ -161,6 +166,7 @@ fn features_for_peak(
             && cf_tail_ratio > 0.7
             && peak_hz >= 70_000.0,
         mean_call_duration_ms,
+        n_pulses,
     }
 }
 
@@ -169,6 +175,7 @@ fn features_for_peak(
 /// Returns one `CallFeatures` per detected peak. Typically one, but returns
 /// two or more when multiple species are calling simultaneously (each peak
 /// separated by ≥ 10 kHz and ≥ 25% of the dominant peak's energy).
+#[allow(clippy::too_many_arguments)]
 pub fn extract_call_features(
     spectrogram: &[Vec<f32>],
     detected: &[bool],
@@ -186,9 +193,9 @@ pub fn extract_call_features(
     // so silence frames don't dilute the spectral features.
     let mut mean_power = vec![0.0f32; freq_bins];
     let mut n = 0usize;
-    for w in start..=end {
-        if detected[w] {
-            for (b, &p) in spectrogram[w].iter().enumerate() {
+    for (det_flag, spec_win) in detected[start..=end].iter().zip(spectrogram[start..=end].iter()) {
+        if *det_flag {
+            for (b, &p) in spec_win.iter().enumerate() {
                 mean_power[b] += p;
             }
             n += 1;
@@ -197,8 +204,8 @@ pub fn extract_call_features(
     // Fallback: group exists but no individual windows are flagged (shouldn't happen).
     if n == 0 {
         n = end - start + 1;
-        for w in start..=end {
-            for (b, &p) in spectrogram[w].iter().enumerate() {
+        for spec_win in spectrogram[start..=end].iter() {
+            for (b, &p) in spec_win.iter().enumerate() {
                 mean_power[b] += p;
             }
         }
