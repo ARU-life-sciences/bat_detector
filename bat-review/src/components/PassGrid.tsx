@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef, GridReadyEvent, CellMouseOverEvent } from "ag-grid-community";
+import type { ColDef, GridReadyEvent, CellMouseOverEvent, CellClickedEvent, CellValueChangedEvent } from "ag-grid-community";
 import { ModuleRegistry, AllCommunityModule, themeQuartz } from "ag-grid-community";
 import type { PassRecord, AnnotationRow } from "../types";
 
@@ -135,6 +135,9 @@ export default function PassGrid({ recordingId, passes, savedAnnotations, onSave
 
   const handleCellMouseOut = useCallback(() => {
     hoverTimerRef.current = setTimeout(() => {
+      // Don't update hover state while a cell editor is open — the re-render
+      // that follows setHoverRange() causes AG Grid to close the editor.
+      if (gridRef.current?.api.getEditingCells().length) return;
       lastHoverIdxRef.current = null;
       onRowHover?.(null);
     }, 60);
@@ -144,11 +147,20 @@ export default function PassGrid({ recordingId, passes, savedAnnotations, onSave
     gridRef.current?.api.sizeColumnsToFit();
   }, []);
 
-  const handleRowClicked = useCallback((e: { data?: GridRow }) => {
+  const handleCellClicked = useCallback((e: CellClickedEvent<GridRow>) => {
+    // Don't interfere with editable cells — let AG Grid handle the editor.
+    if (e.colDef.editable) return;
     if (e.data && onRowClick) {
       onRowClick(e.data.start_sec, e.data.end_sec);
     }
   }, [onRowClick]);
+
+  // Keep rowData React state in sync with AG Grid's internal mutations.
+  // Without this, AG Grid reconciles against stale rowData and reverts edits.
+  const handleCellValueChanged = useCallback((e: CellValueChangedEvent<GridRow>) => {
+    if (!e.data) return;
+    setRowData(rows => rows.map(r => r.idx === e.data!.idx ? { ...e.data! } : r));
+  }, []);
 
   const colDefs = useMemo<ColDef<GridRow>[]>(() => [
     { field: "idx", headerName: "#", width: 46, pinned: "left" },
@@ -158,6 +170,12 @@ export default function PassGrid({ recordingId, passes, savedAnnotations, onSave
         p.data ? `${p.data.start_sec.toFixed(1)}–${p.data.end_sec.toFixed(1)}s` : "",
       width: 90,
     },
+    {
+      headerName: "Dur",
+      valueGetter: (p) => p.data ? p.data.end_sec - p.data.start_sec : null,
+      valueFormatter: (p) => p.value != null ? `${(p.value as number).toFixed(2)}s` : "",
+      width: 65,
+    },
     { field: "n_pulses", headerName: "Pulses", width: 70 },
     {
       field: "mean_peak_khz", headerName: "Peak kHz", width: 80,
@@ -166,17 +184,15 @@ export default function PassGrid({ recordingId, passes, savedAnnotations, onSave
     { field: "code", headerName: "Code", width: 80 },
     { field: "species", headerName: "Species", flex: 1, minWidth: 160 },
     { field: "confidence", headerName: "Conf", width: 70, cellRenderer: ConfBadge },
-    { field: "dubious", headerName: "Flag", width: 70, cellRenderer: DubiousCell },
-    // ── Editable review columns ────────────────────────────────────────────
     {
-      field: "review_status", headerName: "Status", width: 110, editable: true,
-      cellEditor: "agSelectCellEditor",
-      cellEditorParams: { values: ["", "reviewed", "uncertain", "false_positive"] },
+      field: "dubious", headerName: "Dubious", width: 75, cellRenderer: DubiousCell,
+      headerTooltip: "Auto-detected quality flag — read only",
     },
-    { field: "reviewed_code", headerName: "Rev. code", width: 90, editable: true },
-    { field: "reviewed_species", headerName: "Rev. species", flex: 1, minWidth: 140, editable: true },
-    { field: "keep", headerName: "Keep", width: 65, editable: true, cellRenderer: "agCheckboxCellRenderer" },
-    { field: "review_notes", headerName: "Notes", flex: 1, minWidth: 120, editable: true },
+    // ── Editable review columns (single-click to edit) ─────────────────────
+    { field: "reviewed_code",    headerName: "★ Rev. code",    width: 90,  editable: true, cellStyle: { color: "#adf" } },
+    { field: "reviewed_species", headerName: "★ Rev. species", flex: 1, minWidth: 140, editable: true, cellStyle: { color: "#adf" } },
+    { field: "keep",         headerName: "★ Keep",  width: 65, editable: true, cellRenderer: "agCheckboxCellRenderer" },
+    { field: "review_notes", headerName: "★ Notes", flex: 1, minWidth: 120, editable: true, cellStyle: { color: "#adf" } },
   ], []);
 
   if (!recordingId) {
@@ -198,10 +214,13 @@ export default function PassGrid({ recordingId, passes, savedAnnotations, onSave
             rowData={rowData}
             columnDefs={colDefs}
             onGridReady={onGridReady}
-            onRowClicked={handleRowClicked}
+            onCellClicked={handleCellClicked}
+            onCellValueChanged={handleCellValueChanged}
             onCellMouseOver={handleCellMouseOver}
             onCellMouseOut={handleCellMouseOut}
             theme={darkTheme}
+            singleClickEdit
+            stopEditingWhenCellsLoseFocus={false}
           />
         </div>
       </div>

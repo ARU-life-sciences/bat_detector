@@ -73,10 +73,10 @@ function drawSelectionRect(w, h) {
   const lx = Math.max(0, sx0), rx = Math.min(w, sx1);
   if (rx <= lx) return;
   // Semi-transparent fill across the full spectrogram height.
-  ct.fillStyle = 'rgba(80,160,255,0.15)';
+  ct.fillStyle = 'rgba(80,160,255,0.28)';
   ct.fillRect(FAW + lx, MH, rx - lx, h);
   // Solid vertical boundary lines at each edge, extending into the strip above.
-  ct.strokeStyle = 'rgba(100,190,255,0.8)'; ct.lineWidth = 1; ct.setLineDash([]);
+  ct.strokeStyle = 'rgba(120,200,255,0.95)'; ct.lineWidth = 1.5; ct.setLineDash([]);
   ct.beginPath(); ct.moveTo(FAW + lx, 0); ct.lineTo(FAW + lx, MH + h); ct.stroke();
   ct.beginPath(); ct.moveTo(FAW + rx, 0); ct.lineTo(FAW + rx, MH + h); ct.stroke();
 }
@@ -488,10 +488,10 @@ window.addEventListener('message', function(ev) {
     const hx1 = Math.round((hw1 - view.x0) / xS * w);
     const lx = Math.max(0, hx0), rx = Math.min(w, hx1);
     if (rx > lx) {
-      ct.fillStyle = 'rgba(80,220,120,0.10)';
+      ct.fillStyle = 'rgba(80,255,140,0.22)';
       ct.fillRect(FAW + lx, MH, rx - lx, h);
-      ct.strokeStyle = 'rgba(80,220,120,0.55)';
-      ct.lineWidth = 1; ct.setLineDash([4, 3]);
+      ct.strokeStyle = 'rgba(100,255,150,0.90)';
+      ct.lineWidth = 1.5; ct.setLineDash([4, 3]);
       ct.beginPath(); ct.moveTo(FAW + lx, 0); ct.lineTo(FAW + lx, MH + h); ct.stroke();
       ct.beginPath(); ct.moveTo(FAW + rx, 0); ct.lineTo(FAW + rx, MH + h); ct.stroke();
       ct.setLineDash([]);

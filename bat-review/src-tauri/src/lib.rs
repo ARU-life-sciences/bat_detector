@@ -67,9 +67,15 @@ pub struct AnnotationRow {
     pub updated_at: String,
 }
 
+/// Bump this whenever spectrogram.js or the HTML template changes so that
+/// old cached HTML files are automatically regenerated on next analysis.
+const CACHE_VERSION: u32 = 4;
+
 /// What we write to `derived/<stem>.cache.json`.
 #[derive(Serialize, Deserialize)]
 struct CachedResult {
+    #[serde(default)]
+    cache_version: u32,
     file_name: String,
     sample_rate: u32,
     duration_sec: f32,
@@ -165,6 +171,7 @@ fn analyze_recording_sync(
         && fs::write(&html_cache, html.as_bytes()).is_ok()
     {
         let cached = CachedResult {
+            cache_version: CACHE_VERSION,
             file_name:    result.file_name.clone(),
             sample_rate:  result.sample_rate,
             duration_sec: result.duration_sec,
@@ -207,6 +214,11 @@ fn try_load_cache(
 
     let json   = fs::read_to_string(meta_cache).ok()?;
     let cached: CachedResult = serde_json::from_str(&json).ok()?;
+
+    // Reject caches built by an older version of spectrogram.js / HTML template.
+    if cached.cache_version != CACHE_VERSION {
+        return None;
+    }
 
     Some(RecordingPayload {
         file_name:    cached.file_name,

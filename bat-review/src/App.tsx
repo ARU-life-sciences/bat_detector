@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import RecordingList from "./components/RecordingList";
 import SpectrogramViewer from "./components/SpectrogramViewer";
 import PassGrid from "./components/PassGrid";
@@ -173,8 +173,11 @@ export default function App() {
   const recordingId = payload?.file_name ?? selectedPath?.split("/").pop() ?? null;
 
   // Annotations saved for the currently loaded recording.
-  const recordingAnnotations = allAnnotations.filter(
-    (a) => a.recording_id === recordingId
+  // Memoised so PassGrid's useEffect([passes, savedAnnotations]) doesn't reset
+  // row edits on every hover/hoverRange state change in App.
+  const recordingAnnotations = useMemo(
+    () => allAnnotations.filter((a) => a.recording_id === recordingId),
+    [allAnnotations, recordingId]
   );
 
   // ── Layout ────────────────────────────────────────────────────────────────────

@@ -1,6 +1,135 @@
-# bat_detector
+# bat_detector — CLI tool and Bat Review GUI
 
 A command-line bat call detector and classifier for AudioMoth WAV recordings. Processes ultrasonic WAV files, identifies British bat species from their echolocation calls, and produces spectrograms and a detection CSV for survey analysis.
+
+---
+
+## Bat Review — desktop GUI
+
+Bat Review is a desktop app for reviewing AudioMoth WAV recordings analysed by the CLI tool.  It shows an interactive spectrogram, lists the detected bat passes, lets you play back the recording at slowed-down speed, and stores your review notes in a CSV file alongside the recordings.
+
+### Installation
+
+Download the latest release for your platform from the [Releases page](../../releases):
+
+- **macOS Apple Silicon** — `.dmg` (arm64)
+- **macOS Intel** — `.dmg` (x86_64)
+- **Windows** — `.msi` installer
+- **Linux** — `.AppImage`
+
+On macOS you may need to right-click → Open the first time to bypass Gatekeeper.
+
+### Quick start
+
+1. Launch **Bat Review**.
+2. Click **Open folder…** and select the directory containing your `.WAV` files.  The app lists all WAV files found; recordings that already have a cached analysis load instantly.
+3. Click any recording in the left panel to analyse it.  The spectrogram appears in the top pane and the detected passes appear in the table below.
+
+### Layout
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Toolbar: Open folder  |  folder path  |  All annotations   │
+├──────────┬──────────────────────────────────────────────────┤
+│          │  Spectrogram viewer                              │
+│Recording │  ──────────────────────── (drag divider)         │
+│  list    │  Audio player                                    │
+│          │  ══════════════════════════════════════════════  │
+│          │  Pass table                                      │
+└──────────┴──────────────────────────────────────────────────┘
+```
+
+All dividers are draggable — grab the thin bar between panels and drag to resize.
+
+### Spectrogram viewer
+
+| Control | Action |
+|---------|--------|
+| Scroll wheel | Zoom in/out on the time axis |
+| Shift + scroll | Zoom in/out on the frequency axis |
+| Click + drag | Pan |
+| Shift + drag | Draw a selection (blue band) — filters the pass table to overlapping passes |
+| Escape | Clear selection |
+| Double-click | Reset to full view |
+| Click a pass row (table) | Zoom to that pass and seek audio |
+| Hover a pass row (table) | Green band shows the pass time range |
+
+The **red strip** at the top marks windows with detected bat energy.  **White vertical lines** mark call-group boundaries.  **Dashed white lines** mark the 20 kHz and 120 kHz band limits.
+
+### Audio player
+
+The audio player bar sits below the spectrogram.  AudioMoth recordings at 250 kHz are decoded by the browser's 44.1 kHz audio engine, which automatically time-expands and pitch-shifts the calls into the audible range.
+
+| Control | Action |
+|---------|--------|
+| Play / Pause | Start or pause playback |
+| Speed selector | `×0.05` – `×1.0` — slow down further for faint or fast calls |
+| Click a pass row | Seeks audio to the start of that pass |
+
+An **amber vertical line** tracks the playback position on the spectrogram in real time.
+
+### Pass table
+
+Each row is one detected bat pass.  Read-only columns (from the analysis):
+
+| Column | Description |
+|--------|-------------|
+| # | Pass index within the recording |
+| Time | Start – end time (seconds) |
+| Dur | Duration (seconds) |
+| Pulses | Number of echolocation pulses detected |
+| Peak kHz | Mean peak frequency |
+| Code | Six-letter species code (e.g. `PIPPIP`) |
+| Species | Full species name |
+| Conf | Confidence badge — green ≥ 75 %, amber ≥ 40 %, red < 40 % |
+| Dubious | Flagged when a single-pulse pass is nested inside a larger pass of a different species |
+
+Editable columns (highlighted in blue, click to edit):
+
+| Column | Description |
+|--------|-------------|
+| ★ Rev. code | Your reviewed species code |
+| ★ Rev. species | Your reviewed species name |
+| ★ Keep | Checkbox — uncheck to exclude from export |
+| ★ Notes | Free-text notes |
+
+### Saving your review
+
+Click **Save review** (bottom-right of the pass table) to write your annotations for the current recording.  Annotations are stored in `review/annotations.csv` inside the folder you opened — one row per pass, across all recordings.  The file is created automatically and is safe to open in Excel or R.
+
+Switching to a different recording before saving will lose unsaved edits, so save frequently.
+
+### All annotations view
+
+Click the **All annotations** button in the toolbar to see every saved annotation across all recordings in a single sortable table.  You can edit the reviewed fields here too and click **Save all** to commit.  Click the button again (or select a recording) to return to the per-recording view.
+
+### Annotations CSV columns
+
+| Column | Description |
+|--------|-------------|
+| `recording_id` | WAV filename |
+| `pass_idx` | Pass index within the recording |
+| `start_sec`, `end_sec` | Pass time boundaries |
+| `n_pulses` | Pulses detected |
+| `n_extra` | Sub-threshold nearby pulses |
+| `mean_peak_khz` | Mean peak frequency (kHz) |
+| `freq_low_khz`, `freq_high_khz` | −20 dB frequency bounds |
+| `bandwidth_khz` | −10 dB bandwidth |
+| `rep_rate` | Pulse repetition rate (pulses/s) |
+| `call_dur_ms` | Mean pulse duration (ms) |
+| `mean_energy_db` | Mean bat-band energy |
+| `confidence` | Classifier confidence (0–1) |
+| `auto_code`, `auto_species` | Classifier output |
+| `is_cf` | `true` for constant-frequency (horseshoe bat) calls |
+| `dubious` | Classifier quality flag |
+| `reviewed_code`, `reviewed_species` | Your reviewed identification |
+| `keep` | Whether to include this pass in exports |
+| `notes` | Your review notes |
+| `updated_at` | Timestamp of last save |
+
+---
+
+## CLI tool
 
 ## Build
 
