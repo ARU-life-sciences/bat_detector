@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "identifier": "com.bat-review.app",
+  "identifier": "com.batreview.gui",
   "productName": "Bat Review",
   "version": "0.1.0",
   "build": {
@@ -37,7 +37,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "category": "Science",
+    "category": "Utility",
     "shortDescription": "Bat acoustic recording reviewer",
     "macOS": {
       "minimumSystemVersion": "11.0"
