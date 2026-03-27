@@ -299,7 +299,7 @@ function drawTimeAxis(w, h) {
 // Resizes both canvases to fill the browser window, then triggers a full render.
 // Called on window resize and once on initial load.
 function resize() {
-  cv.width = Math.max(800, document.documentElement.clientWidth - 2);
+  cv.width = Math.max(800, document.documentElement.clientWidth - 14);
   cv.height = Math.max(400, Math.floor(window.innerHeight * 0.62));
   ov.width = cv.width; ov.height = cv.height;
   render();
@@ -452,6 +452,78 @@ document.querySelectorAll('tr[data-t0]').forEach(tr => {
     view.x0 = Math.max(0, s - pad); view.x1 = Math.min(D.nW, e + pad);
     render(); cv.scrollIntoView({ behavior: 'smooth' });
   });
+});
+
+// ── External highlight via postMessage ────────────────────────────────────────
+// The parent Tauri frame sends { type:'zoomTo', t0:<seconds>, t1:<seconds> }
+// when the user clicks a pass row in the React PassGrid.  We zoom the view to
+// that time range and set the selection highlight to match.
+window.addEventListener('message', function(ev) {
+  if (!ev.data || ev.data.type !== 'zoomTo') return;
+  const w0 = Math.max(0, Math.floor(ev.data.t0 * D.sr / D.ws));
+  const w1 = Math.min(D.nW - 1, Math.ceil(ev.data.t1 * D.sr / D.ws));
+  sel = { w0, w1 };
+  const pad = Math.max(5, Math.round((w1 - w0) * 0.15));
+  view.x0 = Math.max(0, w0 - pad);
+  view.x1 = Math.min(D.nW, w1 + pad + 1);
+  render();
+  filterTable();
+});
+
+// ── Row hover highlight via postMessage ───────────────────────────────────────
+// Message: { type:'hover', t0:<seconds>, t1:<seconds> }  or  { type:'hover', clear:true }
+// Shows a green dashed band — visually distinct from the blue click-selection.
+let hoverRange = null;
+window.addEventListener('message', function(ev) {
+  if (!ev.data || ev.data.type !== 'hover') return;
+  hoverRange = ev.data.clear ? null : { t0: ev.data.t0, t1: ev.data.t1 };
+  ct.drawImage(ov, 0, 0);
+  const w = vW(), h = vH();
+  drawSelectionRect(w, h);
+  if (hoverRange) {
+    const xS = view.x1 - view.x0;
+    const hw0 = hoverRange.t0 * D.sr / D.ws;
+    const hw1 = hoverRange.t1 * D.sr / D.ws;
+    const hx0 = Math.round((hw0 - view.x0) / xS * w);
+    const hx1 = Math.round((hw1 - view.x0) / xS * w);
+    const lx = Math.max(0, hx0), rx = Math.min(w, hx1);
+    if (rx > lx) {
+      ct.fillStyle = 'rgba(80,220,120,0.10)';
+      ct.fillRect(FAW + lx, MH, rx - lx, h);
+      ct.strokeStyle = 'rgba(80,220,120,0.55)';
+      ct.lineWidth = 1; ct.setLineDash([4, 3]);
+      ct.beginPath(); ct.moveTo(FAW + lx, 0); ct.lineTo(FAW + lx, MH + h); ct.stroke();
+      ct.beginPath(); ct.moveTo(FAW + rx, 0); ct.lineTo(FAW + rx, MH + h); ct.stroke();
+      ct.setLineDash([]);
+    }
+  }
+});
+
+// ── Audio cursor via postMessage ──────────────────────────────────────────────
+// The parent sends { type:'cursor', t:<seconds> } during audio playback.
+// We draw a vertical amber line at that time position (on top of ov snapshot).
+let cursorT = null;
+window.addEventListener('message', function(ev) {
+  if (!ev.data || ev.data.type !== 'cursor') return;
+  cursorT = ev.data.t;
+  // Cheap repaint — don't re-render the full spectrogram pixel loop.
+  ct.drawImage(ov, 0, 0);
+  const w = vW(), h = vH();
+  drawSelectionRect(w, h);
+  if (cursorT !== null) {
+    const win = cursorT * D.sr / D.ws;
+    const xS = view.x1 - view.x0;
+    const x = Math.round((win - view.x0) / xS * w);
+    if (x >= 0 && x <= w) {
+      ct.strokeStyle = 'rgba(255,200,50,0.9)';
+      ct.lineWidth = 1.5;
+      ct.setLineDash([]);
+      ct.beginPath();
+      ct.moveTo(FAW + x, 0);
+      ct.lineTo(FAW + x, MH + h);
+      ct.stroke();
+    }
+  }
 });
 
 // ── Initial render ────────────────────────────────────────────────────────────

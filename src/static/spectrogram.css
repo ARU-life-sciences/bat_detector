@@ -8,7 +8,24 @@ body {
   background: #0d0d1a;
   color: #c8c8dc;
   font: 13px/1.5 'Courier New', monospace;
-  overflow-x: hidden
+  overflow-x: auto;
+  overflow-y: scroll
+}
+
+/* Always-visible scrollbar so the canvas width calculation accounts for it */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px
+}
+::-webkit-scrollbar-track {
+  background: #0d0d1a
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2a3a;
+  border-radius: 5px
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #44aaff
 }
 
 h1 {

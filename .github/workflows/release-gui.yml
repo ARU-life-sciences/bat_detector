@@ -1,0 +1,78 @@
+name: Release GUI
+
+# Triggered by tags of the form gui-v1.2.3
+# e.g.:  git tag gui-v0.2.0 && git push origin gui-v0.2.0
+on:
+  push:
+    tags:
+      - 'gui-v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS — Apple Silicon
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+          # macOS — Intel
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+          # Windows
+          - platform: windows-latest
+            args: ''
+          # Linux
+          - platform: ubuntu-22.04
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: bat-review/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            ${{ contains(matrix.args, 'aarch64-apple-darwin') && 'aarch64-apple-darwin' ||
+                contains(matrix.args, 'x86_64-apple-darwin') && 'x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bat-review/src-tauri -> target
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: bat-review
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: bat-review
+          tagName: ${{ github.ref_name }}
+          releaseName: Bat Review ${{ github.ref_name }}
+          releaseDraft: true        # review before publishing
+          prerelease: false
+          args: ${{ matrix.args }}

@@ -1,0 +1,37 @@
+[package]
+name = "bat-review"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+bat_detector = { path = "../.." }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[features]
+# This feature is used for production builds or when `devPath` points to the
+# filesystem and the built-in dev server is disabled.
+custom-protocol = ["tauri/custom-protocol"]
+
+# Optimize computation-heavy crates even in debug builds so analysis doesn't
+# take 10+ seconds when running `cargo tauri dev`.
+[profile.dev.package.bat_detector]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.hound]
+opt-level = 3
+
+[profile.dev.package.rayon]
+opt-level = 3
+
+[profile.dev.package.rayon-core]
+opt-level = 3

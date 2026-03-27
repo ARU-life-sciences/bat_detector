@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub struct CallFeatures {
     pub peak_hz: f32,
     pub bandwidth_hz: f32, // −10 dB

@@ -26,6 +26,7 @@ pub fn colormap(t: f32) -> [u8; 3] {
 
 // ── Output data structures ────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct PeakInfo {
     pub features: CallFeatures,
     pub code: &'static str,
@@ -34,6 +35,7 @@ pub struct PeakInfo {
 }
 
 /// One call group, potentially containing multiple simultaneous species.
+#[derive(Clone)]
 pub struct CallGroupInfo {
     pub start_win: usize,
     pub end_win: usize,
@@ -478,11 +480,12 @@ fn js_str(s: &str) -> String {
 
 // ── HTML writer ───────────────────────────────────────────────────────────────
 
-/// Write a self-contained interactive HTML spectrogram viewer.
+/// Write the spectrogram HTML to any `Write` sink.
 ///
 /// `spec_bytes` is window-major (`bytes[w * freq_bins + b]`), values 0–255.
 #[allow(clippy::too_many_arguments)]
-pub fn write_html(
+pub fn write_html_to<W: std::io::Write>(
+    w: &mut W,
     stem: &str,
     sample_rate: f32,
     window_size: usize,
@@ -494,9 +497,6 @@ pub fn write_html(
     calls: &[CallGroupInfo],
     passes: &[PassInfo],
 ) -> std::io::Result<()> {
-    let out_path = format!("{}_spectrogram.html", stem);
-    let file = std::fs::File::create(&out_path)?;
-    let mut w = std::io::BufWriter::new(file);
 
     let duration_sec = n_windows as f32 * window_size as f32 / sample_rate;
     let n_pulses: usize = calls.iter().map(|c| c.peaks.len()).sum();
@@ -635,13 +635,35 @@ pub fn write_html(
 
     // Base64 spectrogram data → D.bytes
     w.write_all(b"(function(){const s='")?;
-    write_base64(&mut w, spec_bytes)?;
+    write_base64(w, spec_bytes)?;
     w.write_all(b"';const b=atob(s);const a=new Uint8Array(b.length);for(let i=0;i<b.length;i++)a[i]=b.charCodeAt(i);D.bytes=a;})();\n")?;
 
     // Static rendering + interaction code
     w.write_all(JS.as_bytes())?;
     w.write_all(b"</script>\n</body>\n</html>\n")?;
 
+    Ok(())
+}
+
+/// Write a self-contained interactive HTML spectrogram viewer to a file.
+#[allow(clippy::too_many_arguments)]
+pub fn write_html(
+    stem: &str,
+    sample_rate: f32,
+    window_size: usize,
+    n_windows: usize,
+    freq_bins: usize,
+    hz_per_bin: f32,
+    spec_bytes: &[u8],
+    detected: &[bool],
+    calls: &[CallGroupInfo],
+    passes: &[PassInfo],
+) -> std::io::Result<()> {
+    let out_path = format!("{}_spectrogram.html", stem);
+    let file = std::fs::File::create(&out_path)?;
+    let mut w = std::io::BufWriter::new(file);
+    write_html_to(&mut w, stem, sample_rate, window_size, n_windows, freq_bins,
+                  hz_per_bin, spec_bytes, detected, calls, passes)?;
     println!("Interactive HTML saved to:  {}", out_path);
     Ok(())
 }
