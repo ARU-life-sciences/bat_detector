@@ -441,6 +441,9 @@ fn process_file(
         passes[j].n_pulses += pi_n;
     }
 
+    // ── Feeding-buzz labelling ────────────────────────────────────────────────
+    output::flag_feeding_buzzes(&mut passes);
+
     // ── Local search: sub-threshold pulses near single-pulse passes ───────────
     for i in 0..passes.len() {
         if passes[i].n_pulses != 1 || passes[i].dubious {

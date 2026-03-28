@@ -69,7 +69,7 @@ pub struct AnnotationRow {
 
 /// Bump this whenever spectrogram.js or the HTML template changes so that
 /// old cached HTML files are automatically regenerated on next analysis.
-const CACHE_VERSION: u32 = 4;
+const CACHE_VERSION: u32 = 5;
 
 /// What we write to `derived/<stem>.cache.json`.
 #[derive(Serialize, Deserialize)]

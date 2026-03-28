@@ -28,7 +28,17 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'stat
     // Pipistrelles and big bats end their FM sweep with a CF tail that
     // concentrates energy → high cf_tail_ratio ("slap").
     // Myotis and plecotines are pure FM with no CF tail → low cf_tail_ratio ("click").
-    let has_cf_tail = f.cf_tail_ratio > 0.28;
+    //
+    // Guard against Myotis mis-routed here: for a genuine FM+CF bat the sweep ends
+    // at or near the peak frequency (mean_end_hz / peak_hz ≥ 0.80), because the CF
+    // tail IS the dominant spectral feature.  A Daubenton's or Whiskered bat sweeping
+    // well below its spectral peak (ratio < 0.80) is caught even if cf_tail_ratio
+    // accidentally exceeds the threshold in a noisy recording.
+    // When mean_end_hz is 0 (no per-pulse data available) the guard is bypassed so
+    // cf_tail_ratio alone is used, preserving legacy behaviour.
+    let sweep_ends_near_peak =
+        f.mean_end_hz == 0.0 || f.mean_end_hz > 0.80 * f.peak_hz;
+    let has_cf_tail = f.cf_tail_ratio > 0.28 && sweep_ends_near_peak;
 
     if has_cf_tail {
         // ── Step 4: Pipistrelles (peak > 35 kHz) vs big bats ─────────────────
@@ -173,19 +183,32 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'stat
         );
     }
 
-    // Step 10: broadband FM — general Myotis
-    if f.rep_rate > 10.0 {
+    // Step 10: broadband FM — Myotis species separation by characteristic frequency.
+    // The CF (end of FM sweep = mean_end_hz) is the most reliable acoustic separator:
+    //   Daubenton's:       CF typically 35–44 kHz
+    //   Whiskered/Brandt's: CF typically 45–56 kHz
+    // Values outside these ranges are left unresolved.
+    if f.mean_end_hz > 0.0 && f.mean_end_hz < 45_000.0 {
+        return (
+            "MYODAU",
+            "Daubenton's Bat (Myotis daubentonii)",
+            "CF (end freq) <45 kHz; broadband FM; \
+             flight typically low (<15 cm) over water",
+        );
+    }
+    if f.mean_end_hz >= 45_000.0 && f.mean_end_hz <= 56_000.0 {
         return (
             "MYOSPP",
-            "Myotis sp. (probably Daubenton's / Whiskered / Brandt's)",
-            "Rapid rep >10/s; broadband FM; \
-             Daubenton's confirmed by low (<15 cm) flight over water",
+            "Myotis sp. (Whiskered / Brandt's)",
+            "CF (end freq) 45–56 kHz; broadband FM; \
+             Whiskered (M. mystacinus) and Brandt's (M. brandtii) \
+             only separable by morphology",
         );
     }
     (
         "MYOSPP",
         "Myotis sp. (unresolved)",
-        "Broadband FM; audible over wide range; visual confirmation needed",
+        "Broadband FM; CF outside expected ranges; visual confirmation needed",
     )
 }
 
@@ -206,11 +229,16 @@ mod tests {
             rep_rate: 10.0,
             is_cf: true,
             mean_call_duration_ms: 40.0, // horseshoe bats: long CF calls
+            call_duration_ms_std: 0.0,
+            mean_start_hz: peak_hz,
+            mean_end_hz: peak_hz,
             n_pulses: 1,
         }
     }
 
     /// FM+CF "slap" call (cf_tail_ratio > 0.28, is_cf = false).
+    /// For FM+CF bats the sweep terminates at the CF tail, which sits at the
+    /// spectral peak — so mean_end_hz ≈ peak_hz.
     fn fm_cf(peak_hz: f32, freq_low_hz: f32, freq_high_hz: f32, rep_rate: f32) -> CallFeatures {
         CallFeatures {
             peak_hz,
@@ -221,6 +249,9 @@ mod tests {
             rep_rate,
             is_cf: false,
             mean_call_duration_ms: 5.0,
+            call_duration_ms_std: 0.0,
+            mean_start_hz: freq_high_hz,
+            mean_end_hz: peak_hz, // CF tail ends at the spectral peak
             n_pulses: 1,
         }
     }
@@ -237,6 +268,9 @@ mod tests {
             rep_rate,
             is_cf: false,
             mean_call_duration_ms: 5.0,
+            call_duration_ms_std: 0.0,
+            mean_start_hz: freq_high_hz,
+            mean_end_hz: freq_low_hz,
             n_pulses: 1,
         }
     }
@@ -368,17 +402,43 @@ mod tests {
     }
 
     #[test]
-    fn myotis_rapid() {
-        // Broadband FM, rep > 10/s → probably Daubenton's etc.
+    fn myotis_daubenton() {
+        // CF (end freq) < 45 kHz → Daubenton's
         let f = pure_fm(45_000.0, 25_000.0, 80_000.0, 15.0);
-        let (_, sp, _) = classify_british(&f);
+        // pure_fm sets mean_end_hz = freq_low_hz = 25 kHz → MYODAU
+        let (code, sp, _) = classify_british(&f);
+        assert_eq!(code, "MYODAU", "{}", sp);
         assert!(sp.contains("Daubenton"), "{}", sp);
     }
 
     #[test]
+    fn daubenton_not_confused_with_pipistrelle() {
+        // Daubenton's at Common Pip frequency: peak 45 kHz, elevated cf_tail_ratio
+        // (strong nearby call), but sweep ends well below peak (mean_end_hz = 35 kHz).
+        // The sweep_ends_near_peak guard must block the FM+CF path.
+        let mut f = pure_fm(45_000.0, 30_000.0, 80_000.0, 12.0);
+        f.cf_tail_ratio = 0.35;   // would normally trigger the pipistrelle path
+        f.mean_end_hz   = 35_000.0; // 35/45 = 0.78 → below the 0.80 guard
+        let (code, _, _) = classify_british(&f);
+        assert_ne!(code, "PIPPIP", "Daubenton's must not be called Common Pip");
+        assert_ne!(code, "PIPPYG", "Daubenton's must not be called Soprano Pip");
+    }
+
+    #[test]
+    fn myotis_whiskered_brandts() {
+        // CF (end freq) 45–56 kHz → Whiskered / Brandt's
+        let mut f = pure_fm(55_000.0, 25_000.0, 80_000.0, 12.0);
+        f.mean_end_hz = 50_000.0; // override to place firmly in Whiskered range
+        let (code, sp, _) = classify_british(&f);
+        assert_eq!(code, "MYOSPP", "{}", code);
+        assert!(sp.contains("Whiskered"), "{}", sp);
+    }
+
+    #[test]
     fn myotis_unresolved() {
-        // Broadband FM, rep ≤ 10/s → unresolved Myotis
-        let f = pure_fm(45_000.0, 25_000.0, 80_000.0, 8.0);
+        // CF (end freq) outside expected ranges → unresolved
+        let mut f = pure_fm(45_000.0, 25_000.0, 80_000.0, 8.0);
+        f.mean_end_hz = 60_000.0; // above 56 kHz → no species match
         let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("unresolved"), "{}", sp);
     }

@@ -69,6 +69,9 @@ pub struct PassRecord {
     pub rep_rate: f32,
     pub is_cf: bool,
     pub call_dur_ms: f32,
+    pub call_dur_ms_std: f32,
+    pub mean_start_khz: f32,
+    pub mean_end_khz: f32,
     pub mean_energy_db: f32,
     pub peak_energy_db: f32,
     pub dubious: bool,
@@ -95,6 +98,9 @@ impl PassRecord {
             rep_rate:        p.mean_rep_rate,
             is_cf:           p.is_cf,
             call_dur_ms:     p.mean_call_duration_ms,
+            call_dur_ms_std: p.call_duration_ms_std,
+            mean_start_khz:  p.mean_start_hz / 1000.0,
+            mean_end_khz:    p.mean_end_hz   / 1000.0,
             mean_energy_db:  p.mean_energy_db,
             peak_energy_db:  p.peak_energy_db,
             dubious:         p.dubious,
@@ -291,6 +297,9 @@ pub fn analyze_wav(path: &str, params: &AnalysisParams) -> Result<RecordingResul
         if pi_e > passes[j].end_sec   { passes[j].end_sec   = pi_e; }
         passes[j].n_pulses += pi_n;
     }
+
+    // ── Feeding-buzz labelling ────────────────────────────────────────────────
+    output::flag_feeding_buzzes(&mut passes);
 
     // ── Local search: sub-threshold pulses near single-pulse passes ───────────
     for i in 0..passes.len() {

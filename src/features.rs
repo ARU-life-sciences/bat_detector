@@ -10,6 +10,18 @@ pub struct CallFeatures {
     /// Mean individual call duration in milliseconds.
     /// Estimated as (detected windows in group) / (pulses in group) × window_ms.
     pub mean_call_duration_ms: f32,
+    /// Standard deviation of individual call durations (ms) across pulses in this group.
+    /// Zero for single-pulse groups.  High values suggest mixed-species or distant calls.
+    pub call_duration_ms_std: f32,
+    /// Mean instantaneous peak frequency at the start of each pulse (top quartile of
+    /// each detected run), averaged across all pulses in the group.  Tracks the high end
+    /// of the FM sweep.
+    pub mean_start_hz: f32,
+    /// Mean instantaneous peak frequency at the end of each pulse (bottom quartile of
+    /// each detected run), averaged across all pulses.  This is the characteristic
+    /// frequency (CF) — the lowest frequency the bat sweeps to — which is the primary
+    /// discriminator between Myotis species.
+    pub mean_end_hz: f32,
     /// Number of individual pulses counted within this call group.
     pub n_pulses: usize,
 }
@@ -73,6 +85,7 @@ fn find_peaks(
 fn features_for_peak(
     mean_power: &[f32],
     spectrogram: &[Vec<f32>],
+    detected: &[bool],
     start: usize,
     end: usize,
     n_detected: usize,
@@ -153,6 +166,70 @@ fn features_for_peak(
     let mean_call_duration_ms =
         n_detected as f32 / n_pulses as f32 * window_size as f32 / sample_rate * 1000.0;
 
+    // Per-pulse start/end frequency and duration tracking.
+    // Segment the detected-window runs into individual pulses.
+    // For each pulse: start_hz = mean instantaneous peak of the first quarter of windows
+    //                 (top of the FM sweep); end_hz = mean of the last quarter (characteristic
+    //                 frequency = lowest point of sweep).
+    let det_slice = &detected[start..=end];
+    let mut pulse_start_freqs: Vec<f32> = Vec::new();
+    let mut pulse_end_freqs:   Vec<f32> = Vec::new();
+    let mut pulse_durations_ms: Vec<f32> = Vec::new();
+    let mut in_pulse = false;
+    let mut pulse_freq_windows: Vec<f32> = Vec::new();
+
+    for (i, &d) in det_slice.iter().enumerate() {
+        let w = start + i;
+        if d {
+            if !in_pulse {
+                in_pulse = true;
+                pulse_freq_windows.clear();
+            }
+            // Instantaneous peak frequency: bin with max energy in this peak's territory.
+            let (rel, _) = spectrogram[w][left_bound..=right_bound]
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap_or((0, &0.0));
+            pulse_freq_windows.push((left_bound + rel) as f32 * hz_per_bin);
+        } else if in_pulse {
+            in_pulse = false;
+            let n = pulse_freq_windows.len();
+            let dur_ms = n as f32 * window_size as f32 / sample_rate * 1000.0;
+            pulse_durations_ms.push(dur_ms);
+            let q = (n / 4).max(1);
+            pulse_start_freqs.push(pulse_freq_windows[..q].iter().sum::<f32>() / q as f32);
+            pulse_end_freqs.push(pulse_freq_windows[n - q..].iter().sum::<f32>() / q as f32);
+        }
+    }
+    if in_pulse {
+        let n = pulse_freq_windows.len();
+        let dur_ms = n as f32 * window_size as f32 / sample_rate * 1000.0;
+        pulse_durations_ms.push(dur_ms);
+        let q = (n / 4).max(1);
+        pulse_start_freqs.push(pulse_freq_windows[..q].iter().sum::<f32>() / q as f32);
+        pulse_end_freqs.push(pulse_freq_windows[n - q..].iter().sum::<f32>() / q as f32);
+    }
+
+    let mean_start_hz = if !pulse_start_freqs.is_empty() {
+        pulse_start_freqs.iter().sum::<f32>() / pulse_start_freqs.len() as f32
+    } else {
+        freq_high_hz // fallback: use −20 dB upper bound as start approximation
+    };
+    let mean_end_hz = if !pulse_end_freqs.is_empty() {
+        pulse_end_freqs.iter().sum::<f32>() / pulse_end_freqs.len() as f32
+    } else {
+        freq_low_hz  // fallback: use −20 dB lower bound as CF approximation
+    };
+    let call_duration_ms_std = if pulse_durations_ms.len() > 1 {
+        let mean = pulse_durations_ms.iter().sum::<f32>() / pulse_durations_ms.len() as f32;
+        let var  = pulse_durations_ms.iter().map(|&d| (d - mean).powi(2)).sum::<f32>()
+                   / pulse_durations_ms.len() as f32;
+        var.sqrt()
+    } else {
+        0.0
+    };
+
     CallFeatures {
         peak_hz,
         bandwidth_hz,
@@ -167,6 +244,9 @@ fn features_for_peak(
             && cf_tail_ratio > 0.7
             && peak_hz >= 70_000.0,
         mean_call_duration_ms,
+        call_duration_ms_std,
+        mean_start_hz,
+        mean_end_hz,
         n_pulses,
     }
 }
@@ -234,6 +314,7 @@ pub fn extract_call_features(
             features_for_peak(
                 &mean_power,
                 spectrogram,
+                detected,
                 start,
                 end,
                 n,
