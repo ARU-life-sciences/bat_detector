@@ -126,7 +126,30 @@ pub fn detect_bat_windows(
                 // Bat band covers the whole spectrum; fall back to whole-spectrum mean.
                 w[1..].iter().sum::<f32>() / (w.len().saturating_sub(1)) as f32
             };
-            let ratio_ok = non_bat_mean > 0.0 && e_mean / non_bat_mean > spectral_ratio_min;
+            // Primary ratio check: bat-band mean vs non-bat mean.
+            let standard_ratio_ok = non_bat_mean > 0.0
+                && e_mean / non_bat_mean > spectral_ratio_min;
+
+            // Horseshoe-bat rescue: compare the top 40 % of the bat band
+            // (78–120 kHz for a typical 15–120 kHz band) against the lower 60 %.
+            // A narrow CF signal at 80–120 kHz concentrates nearly all its energy
+            // in 2–4 bins at the top of the band, giving a top/bottom ratio of
+            // 50–500×.  FM bat calls and broadband noise with energy below 78 kHz
+            // leave the top portion at noise level, so their ratio stays near 1.
+            // This is completely independent of the non-bat-band comparison, so it
+            // works even when there is no signal below 15 kHz or above 120 kHz.
+            let top_lo = bin_low + (bin_high - bin_low) * 3 / 5; // boundary at 60 %
+            let n_top    = (bin_high + 1).saturating_sub(top_lo) as f32;
+            let n_bottom = top_lo.saturating_sub(bin_low) as f32;
+            let top_mean = if n_top > 0.0 {
+                w[top_lo..=bin_high].iter().sum::<f32>() / n_top
+            } else { 0.0 };
+            let bottom_mean = if n_bottom > 0.0 {
+                w[bin_low..top_lo].iter().sum::<f32>() / n_bottom
+            } else { f32::INFINITY }; // no bottom bins → ratio near 0, guard fails
+            let horseshoe_ok = bottom_mean > 0.0 && top_mean / bottom_mean > 5.0;
+
+            let ratio_ok = standard_ratio_ok || horseshoe_ok;
 
             adaptive_ok && ratio_ok
         })
@@ -208,7 +231,19 @@ pub fn detect_bat_windows_diag(
                 w[1..].iter().sum::<f32>() / (w.len().saturating_sub(1)) as f32
             };
             let cond2_ratio = if nonbat_mean > 0.0 { bat_mean / nonbat_mean } else { 0.0 };
-            let cond2_pass = nonbat_mean > 0.0 && cond2_ratio > spectral_ratio_min;
+            let standard_cond2 = nonbat_mean > 0.0 && cond2_ratio > spectral_ratio_min;
+            // Horseshoe-bat rescue: mirrors the logic in detect_bat_windows.
+            let top_lo = bin_low + (bin_high - bin_low) * 3 / 5;
+            let n_top    = (bin_high + 1).saturating_sub(top_lo) as f32;
+            let n_bottom = top_lo.saturating_sub(bin_low) as f32;
+            let top_mean = if n_top > 0.0 {
+                w[top_lo..=bin_high].iter().sum::<f32>() / n_top
+            } else { 0.0 };
+            let bottom_mean_hf = if n_bottom > 0.0 {
+                w[bin_low..top_lo].iter().sum::<f32>() / n_bottom
+            } else { f32::INFINITY };
+            let horseshoe_ok = bottom_mean_hf > 0.0 && top_mean / bottom_mean_hf > 5.0;
+            let cond2_pass = standard_cond2 || horseshoe_ok;
 
             WindowDiag {
                 time_s: i as f32 * window_size as f32 / sample_rate,

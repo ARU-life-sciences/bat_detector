@@ -295,7 +295,12 @@ pub fn extract_call_features(
         *p /= n as f32;
     }
 
-    let peak_bins = find_peaks(&mean_power, bin_low, bin_high, hz_per_bin, 10_000.0, 0.25);
+    // min_rel_height = 0.15: a secondary peak must reach 15 % of the dominant
+    // peak's mean energy to be treated as a separate species.  0.25 was too
+    // conservative for Noctule+Pip co-occurrence; below 0.15 the pip's own
+    // subharmonic energy (~28 kHz) creates spurious NYCNOC passes in pure-pip
+    // recordings, outweighing the benefit of detecting weak secondaries.
+    let peak_bins = find_peaks(&mean_power, bin_low, bin_high, hz_per_bin, 10_000.0, 0.15);
 
     peak_bins
         .iter()

@@ -179,18 +179,22 @@ pub fn analyze_wav(path: &str, params: &AnalysisParams) -> Result<RecordingResul
     let spec = reader.spec();
     let sample_rate = spec.sample_rate as f32;
 
+    // Tolerate truncated WAV files (data chunk larger than actual bytes on disk).
     let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader
-            .samples::<f32>()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Error reading samples: {}", e))?,
+        hound::SampleFormat::Float => {
+            let mut v = Vec::new();
+            for s in reader.samples::<f32>() {
+                match s { Ok(x) => v.push(x), Err(_) => break }
+            }
+            v
+        }
         hound::SampleFormat::Int => {
             let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-            reader
-                .samples::<i32>()
-                .map(|s| s.map(|v| v as f32 / max))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("Error reading samples: {}", e))?
+            let mut v = Vec::new();
+            for s in reader.samples::<i32>() {
+                match s { Ok(x) => v.push(x as f32 / max), Err(_) => break }
+            }
+            v
         }
     };
 

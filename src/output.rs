@@ -129,9 +129,15 @@ impl PassInfo {
 
 // Per-call sample collected during pass accumulation.
 struct PassSample {
-    start: f32, end: f32,
-    peak_hz: f32, freq_low_hz: f32, freq_high_hz: f32,
-    bandwidth_hz: f32, cf_tail_ratio: f32, rep_rate: f32, is_cf: bool,
+    start: f32,
+    end: f32,
+    peak_hz: f32,
+    freq_low_hz: f32,
+    freq_high_hz: f32,
+    bandwidth_hz: f32,
+    cf_tail_ratio: f32,
+    rep_rate: f32,
+    is_cf: bool,
     mean_call_duration_ms: f32,
     call_duration_ms_std: f32,
     mean_start_hz: f32,
@@ -155,25 +161,30 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
         // pulse count (and all averaged features) to be doubled in the merged pass.
         let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
         for peak in &call.peaks {
-            if !seen.insert(peak.species) { continue; }
-            by_species.entry(peak.species).or_default().push(PassSample {
-                start: call.start_sec,
-                end: call.end_sec,
-                peak_hz: peak.features.peak_hz,
-                freq_low_hz: peak.features.freq_low_hz,
-                freq_high_hz: peak.features.freq_high_hz,
-                bandwidth_hz: peak.features.bandwidth_hz,
-                cf_tail_ratio: peak.features.cf_tail_ratio,
-                rep_rate: peak.features.rep_rate,
-                is_cf: peak.features.is_cf,
-                mean_call_duration_ms: peak.features.mean_call_duration_ms,
-                call_duration_ms_std:  peak.features.call_duration_ms_std,
-                mean_start_hz:         peak.features.mean_start_hz,
-                mean_end_hz:           peak.features.mean_end_hz,
-                n_pulses: peak.features.n_pulses,
-                code: peak.code,
-                notes: peak.notes,
-            });
+            if !seen.insert(peak.species) {
+                continue;
+            }
+            by_species
+                .entry(peak.species)
+                .or_default()
+                .push(PassSample {
+                    start: call.start_sec,
+                    end: call.end_sec,
+                    peak_hz: peak.features.peak_hz,
+                    freq_low_hz: peak.features.freq_low_hz,
+                    freq_high_hz: peak.features.freq_high_hz,
+                    bandwidth_hz: peak.features.bandwidth_hz,
+                    cf_tail_ratio: peak.features.cf_tail_ratio,
+                    rep_rate: peak.features.rep_rate,
+                    is_cf: peak.features.is_cf,
+                    mean_call_duration_ms: peak.features.mean_call_duration_ms,
+                    call_duration_ms_std: peak.features.call_duration_ms_std,
+                    mean_start_hz: peak.features.mean_start_hz,
+                    mean_end_hz: peak.features.mean_end_hz,
+                    n_pulses: peak.features.n_pulses,
+                    code: peak.code,
+                    notes: peak.notes,
+                });
         }
     }
 
@@ -198,18 +209,18 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
                     end_sec: $ce,
                     n_pulses: $pc,
                     n_extra: 0,
-                    mean_peak_hz:           mean_ph,
+                    mean_peak_hz: mean_ph,
                     peak_hz_std,
-                    mean_freq_low_hz:       $sums.1 / n,
-                    mean_freq_high_hz:      $sums.2 / n,
-                    mean_bandwidth_hz:      $sums.3 / n,
-                    mean_cf_tail_ratio:     $sums.4 / n,
-                    mean_rep_rate:          $sums.5 / n,
-                    is_cf:                  $sums.6,
-                    mean_call_duration_ms:  $sums.8 / n,
-                    call_duration_ms_std:   $sums.9 / n,
-                    mean_start_hz:          $sums.10 / n,
-                    mean_end_hz:            $sums.11 / n,
+                    mean_freq_low_hz: $sums.1 / n,
+                    mean_freq_high_hz: $sums.2 / n,
+                    mean_bandwidth_hz: $sums.3 / n,
+                    mean_cf_tail_ratio: $sums.4 / n,
+                    mean_rep_rate: $sums.5 / n,
+                    is_cf: $sums.6,
+                    mean_call_duration_ms: $sums.8 / n,
+                    call_duration_ms_std: $sums.9 / n,
+                    mean_start_hz: $sums.10 / n,
+                    mean_end_hz: $sums.11 / n,
                     mean_energy_db: 0.0,
                     peak_energy_db: 0.0,
                     code: $code,
@@ -221,50 +232,88 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
 
         let s0 = &items[0];
         let mut cur_start = s0.start;
-        let mut cur_end   = s0.end;
-        let mut cur_code  = s0.code;
+        let mut cur_end = s0.end;
+        let mut cur_code = s0.code;
         let mut cur_notes = s0.notes;
         // sums: (peak_hz, freq_low, freq_high, bandwidth, cf_tail_ratio, rep_rate, any_cf,
         //        peak_hz_sq, call_dur_ms, call_dur_ms_std, mean_start_hz, mean_end_hz)
-        let mut sums = (s0.peak_hz, s0.freq_low_hz, s0.freq_high_hz,
-                        s0.bandwidth_hz, s0.cf_tail_ratio, s0.rep_rate, s0.is_cf,
-                        s0.peak_hz * s0.peak_hz, s0.mean_call_duration_ms,
-                        s0.call_duration_ms_std, s0.mean_start_hz, s0.mean_end_hz);
+        let mut sums = (
+            s0.peak_hz,
+            s0.freq_low_hz,
+            s0.freq_high_hz,
+            s0.bandwidth_hz,
+            s0.cf_tail_ratio,
+            s0.rep_rate,
+            s0.is_cf,
+            s0.peak_hz * s0.peak_hz,
+            s0.mean_call_duration_ms,
+            s0.call_duration_ms_std,
+            s0.mean_start_hz,
+            s0.mean_end_hz,
+        );
         let mut count = 1usize;
         let mut pulse_count = s0.n_pulses;
 
         for s in &items[1..] {
             if s.start - cur_end <= max_gap_sec {
-                if s.end > cur_end { cur_end = s.end; }
-                sums.0  += s.peak_hz;
-                sums.1  += s.freq_low_hz;
-                sums.2  += s.freq_high_hz;
-                sums.3  += s.bandwidth_hz;
-                sums.4  += s.cf_tail_ratio;
-                sums.5  += s.rep_rate;
-                sums.6  |= s.is_cf;
-                sums.7  += s.peak_hz * s.peak_hz;
-                sums.8  += s.mean_call_duration_ms;
-                sums.9  += s.call_duration_ms_std;
+                if s.end > cur_end {
+                    cur_end = s.end;
+                }
+                sums.0 += s.peak_hz;
+                sums.1 += s.freq_low_hz;
+                sums.2 += s.freq_high_hz;
+                sums.3 += s.bandwidth_hz;
+                sums.4 += s.cf_tail_ratio;
+                sums.5 += s.rep_rate;
+                sums.6 |= s.is_cf;
+                sums.7 += s.peak_hz * s.peak_hz;
+                sums.8 += s.mean_call_duration_ms;
+                sums.9 += s.call_duration_ms_std;
                 sums.10 += s.mean_start_hz;
                 sums.11 += s.mean_end_hz;
                 count += 1;
                 pulse_count += s.n_pulses;
             } else {
-                flush!(cur_start, cur_end, sums, count, pulse_count, cur_code, cur_notes);
+                flush!(
+                    cur_start,
+                    cur_end,
+                    sums,
+                    count,
+                    pulse_count,
+                    cur_code,
+                    cur_notes
+                );
                 cur_start = s.start;
-                cur_end   = s.end;
-                cur_code  = s.code;
+                cur_end = s.end;
+                cur_code = s.code;
                 cur_notes = s.notes;
-                sums = (s.peak_hz, s.freq_low_hz, s.freq_high_hz,
-                        s.bandwidth_hz, s.cf_tail_ratio, s.rep_rate, s.is_cf,
-                        s.peak_hz * s.peak_hz, s.mean_call_duration_ms,
-                        s.call_duration_ms_std, s.mean_start_hz, s.mean_end_hz);
+                sums = (
+                    s.peak_hz,
+                    s.freq_low_hz,
+                    s.freq_high_hz,
+                    s.bandwidth_hz,
+                    s.cf_tail_ratio,
+                    s.rep_rate,
+                    s.is_cf,
+                    s.peak_hz * s.peak_hz,
+                    s.mean_call_duration_ms,
+                    s.call_duration_ms_std,
+                    s.mean_start_hz,
+                    s.mean_end_hz,
+                );
                 count = 1;
                 pulse_count = s.n_pulses;
             }
         }
-        flush!(cur_start, cur_end, sums, count, pulse_count, cur_code, cur_notes);
+        flush!(
+            cur_start,
+            cur_end,
+            sums,
+            count,
+            pulse_count,
+            cur_code,
+            cur_notes
+        );
     }
 
     passes.sort_by(|a, b| a.start_sec.partial_cmp(&b.start_sec).unwrap());
@@ -276,7 +325,13 @@ pub fn compute_passes(calls: &[CallGroupInfo], max_gap_sec: f32) -> Vec<PassInfo
 /// Rep rate above which a pass is treated as a feeding buzz.
 /// Normal foraging passes top out around 15–20/s; terminal approach buzzes
 /// reach 50–200/s as the bat compresses calls approaching prey.
-pub const BUZZ_REP_RATE: f32 = 20.0;
+pub const BUZZ_REP_RATE: f32 = 30.0;
+
+/// Minimum pulse count before a pass can be flagged as a feeding buzz.
+/// A buzz physically requires a run of compressed calls; 1–2 pulses always
+/// produce a high pass-level rep rate by arithmetic (1 pulse / 4 ms = 250/s)
+/// even when they are normal foraging calls or a Noctule chip-chop pair.
+const BUZZ_MIN_PULSES: usize = 5;
 
 /// Search window (seconds either side of a buzz) for a context pass.
 const BUZZ_CONTEXT_GAP_S: f32 = 3.0;
@@ -312,11 +367,13 @@ pub fn flag_feeding_buzzes(passes: &mut Vec<PassInfo>) {
 
     // Collect (buzz_idx, Option<context_idx>) without mutating yet.
     let changes: Vec<(usize, Option<usize>)> = (0..n)
-        .filter(|&i| pass_rep_rate(&passes[i]) > BUZZ_REP_RATE)
+        .filter(|&i| {
+            passes[i].n_pulses >= BUZZ_MIN_PULSES && pass_rep_rate(&passes[i]) > BUZZ_REP_RATE
+        })
         .map(|i| {
-            let buzz_peak  = passes[i].mean_peak_hz;
+            let buzz_peak = passes[i].mean_peak_hz;
             let buzz_start = passes[i].start_sec;
-            let buzz_end   = passes[i].end_sec;
+            let buzz_end = passes[i].end_sec;
 
             let context = (0..n)
                 .filter(|&j| {
@@ -324,14 +381,14 @@ pub fn flag_feeding_buzzes(passes: &mut Vec<PassInfo>) {
                         && !passes[j].dubious
                         && pass_rep_rate(&passes[j]) <= BUZZ_REP_RATE
                         && (passes[j].mean_peak_hz - buzz_peak).abs() <= BUZZ_FREQ_TOL_HZ
-                        && passes[j].end_sec   >= buzz_start - BUZZ_CONTEXT_GAP_S
-                        && passes[j].start_sec <= buzz_end   + BUZZ_CONTEXT_GAP_S
+                        && passes[j].end_sec >= buzz_start - BUZZ_CONTEXT_GAP_S
+                        && passes[j].start_sec <= buzz_end + BUZZ_CONTEXT_GAP_S
                 })
                 .min_by(|&a, &b| {
                     // Prefer temporally closest (gap = 0 when overlapping).
                     let gap = |j: usize| -> f32 {
                         let before = (buzz_start - passes[j].end_sec).max(0.0);
-                        let after  = (passes[j].start_sec - buzz_end).max(0.0);
+                        let after = (passes[j].start_sec - buzz_end).max(0.0);
                         before.min(after)
                     };
                     gap(a).partial_cmp(&gap(b)).unwrap()
@@ -344,11 +401,11 @@ pub fn flag_feeding_buzzes(passes: &mut Vec<PassInfo>) {
     for (i, context) in changes {
         passes[i].dubious = true;
         if let Some(j) = context {
-            passes[i].code    = passes[j].code;
+            passes[i].code = passes[j].code;
             passes[i].species = passes[j].species;
-            passes[i].notes   = "Feeding buzz; species inferred from adjacent pass";
+            passes[i].notes = "Feeding buzz; species inferred from adjacent pass";
         } else {
-            passes[i].notes   = "Feeding buzz; no adjacent context — species uncertain";
+            passes[i].notes = "Feeding buzz; no adjacent context — species uncertain";
         }
     }
 }
@@ -361,12 +418,21 @@ pub fn flag_feeding_buzzes(passes: &mut Vec<PassInfo>) {
 /// Returns empty strings when the pattern is not found.
 fn parse_stem_datetime(path: &str) -> (String, String) {
     // Get the filename component, strip any extension.
-    let name = path.rsplit('/').next().unwrap_or(path)
-                   .rsplit('\\').next().unwrap_or(path);
-    let base = name.rsplit('.').nth(1).map(|_| {
-        // has a dot — drop everything from the last dot
-        &name[..name.rfind('.').unwrap()]
-    }).unwrap_or(name);
+    let name = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .rsplit('\\')
+        .next()
+        .unwrap_or(path);
+    let base = name
+        .rsplit('.')
+        .nth(1)
+        .map(|_| {
+            // has a dot — drop everything from the last dot
+            &name[..name.rfind('.').unwrap()]
+        })
+        .unwrap_or(name);
 
     // Search for YYYYMMDD_HHMMSS anywhere in the base name.
     for i in 0..base.len().saturating_sub(14) {
@@ -390,11 +456,7 @@ fn parse_stem_datetime(path: &str) -> (String, String) {
 ///          n_pulses, n_extra, mean_peak_khz, freq_low_khz, freq_high_khz,
 ///          bandwidth_khz, cf_tail_ratio, rep_rate_hz, is_cf,
 ///          mean_energy_db, peak_energy_db, species, dubious
-pub fn write_csv(
-    stem: &str,
-    path: &str,
-    passes: &[PassInfo],
-) -> std::io::Result<()> {
+pub fn write_csv(stem: &str, path: &str, passes: &[PassInfo]) -> std::io::Result<()> {
     let out_path = format!("{}_detections.csv", stem);
     let file = std::fs::File::create(&out_path)?;
     let mut w = std::io::BufWriter::new(file);
@@ -426,30 +488,36 @@ fn write_csv_rows<W: std::io::Write>(
         .unwrap_or(path);
     for (i, p) in passes.iter().enumerate() {
         let species_quoted = format!("\"{}\"", p.species.replace('"', "\"\""));
-        let notes_quoted   = format!("\"{}\"", p.notes.replace('"', "\"\""));
+        let notes_quoted = format!("\"{}\"", p.notes.replace('"', "\"\""));
         writeln!(
             w,
             "{},{},{},{},{:.3},{:.3},{:.0},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.2},{:.2},{:.2},{:.3},{:.3},{},{:.2},{:.2},{},{},{},{},{:.2}",
-            filename, date, time,
+            filename,
+            date,
+            time,
             index_offset + i + 1,
-            p.start_sec, p.end_sec,
+            p.start_sec,
+            p.end_sec,
             (p.end_sec - p.start_sec) * 1000.0,
-            p.n_pulses, p.n_extra,
-            p.mean_peak_hz        / 1000.0,
-            p.peak_hz_std         / 1000.0,
-            p.mean_freq_low_hz    / 1000.0,
-            p.mean_freq_high_hz   / 1000.0,
-            p.mean_bandwidth_hz   / 1000.0,
+            p.n_pulses,
+            p.n_extra,
+            p.mean_peak_hz / 1000.0,
+            p.peak_hz_std / 1000.0,
+            p.mean_freq_low_hz / 1000.0,
+            p.mean_freq_high_hz / 1000.0,
+            p.mean_bandwidth_hz / 1000.0,
             p.mean_cf_tail_ratio,
             p.mean_rep_rate,
             p.mean_call_duration_ms,
             p.call_duration_ms_std,
             p.mean_start_hz / 1000.0,
-            p.mean_end_hz   / 1000.0,
+            p.mean_end_hz / 1000.0,
             p.is_cf,
-            p.mean_energy_db, p.peak_energy_db,
+            p.mean_energy_db,
+            p.peak_energy_db,
             p.code,
-            species_quoted, notes_quoted,
+            species_quoted,
+            notes_quoted,
             p.dubious,
             p.confidence(),
         )?;
@@ -459,10 +527,7 @@ fn write_csv_rows<W: std::io::Write>(
 
 /// Write one aggregated `survey.csv` inside `dir` covering all files' passes.
 /// Pass indices run continuously across files (1, 2, 3 … N).
-pub fn write_survey_csv(
-    dir: &str,
-    file_passes: &[(String, Vec<PassInfo>)],
-) -> std::io::Result<()> {
+pub fn write_survey_csv(dir: &str, file_passes: &[(String, Vec<PassInfo>)]) -> std::io::Result<()> {
     let out_path = std::path::Path::new(dir).join("survey.csv");
     let file = std::fs::File::create(&out_path)?;
     let mut w = std::io::BufWriter::new(file);
@@ -501,7 +566,11 @@ pub fn write_png(
 
     for (x, win_bytes) in spec_bytes.chunks(freq_bins).enumerate().take(n_windows) {
         // Detection marker strip
-        let mc = if detected[x] { Rgb([220u8, 50, 50]) } else { Rgb([30u8, 30, 30]) };
+        let mc = if detected[x] {
+            Rgb([220u8, 50, 50])
+        } else {
+            Rgb([30u8, 30, 30])
+        };
         for y in 0..MARKER_H {
             img.put_pixel(x as u32, y, mc);
         }
@@ -542,7 +611,6 @@ const CSS: &str = include_str!("static/spectrogram.css");
 
 const JS: &str = include_str!("static/spectrogram.js");
 
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Encode `data` as base64, streaming directly to `w` (no intermediate String).
@@ -556,8 +624,16 @@ fn write_base64<W: std::io::Write>(w: &mut W, data: &[u8]) -> std::io::Result<()
         let n = (a << 16) | (b << 8) | c;
         buf[0] = T[(n >> 18) as usize];
         buf[1] = T[((n >> 12) & 63) as usize];
-        buf[2] = if chunk.len() > 1 { T[((n >> 6) & 63) as usize] } else { b'=' };
-        buf[3] = if chunk.len() > 2 { T[(n & 63) as usize] } else { b'=' };
+        buf[2] = if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize]
+        } else {
+            b'='
+        };
+        buf[3] = if chunk.len() > 2 {
+            T[(n & 63) as usize]
+        } else {
+            b'='
+        };
         w.write_all(&buf)?;
     }
     Ok(())
@@ -606,7 +682,6 @@ pub fn write_html_to<W: std::io::Write>(
     calls: &[CallGroupInfo],
     passes: &[PassInfo],
 ) -> std::io::Result<()> {
-
     let duration_sec = n_windows as f32 * window_size as f32 / sample_rate;
     let n_pulses: usize = calls.iter().map(|c| c.peaks.len()).sum();
 
@@ -624,8 +699,12 @@ pub fn write_html_to<W: std::io::Write>(
          Duration: {:.1} s &nbsp;|&nbsp; \
          {} windows ({}-point FFT) &nbsp;|&nbsp; \
          {} pulse(s) &rarr; {} pass(es)</p>",
-        sample_rate as u32, duration_sec, n_windows, window_size,
-        n_pulses, passes.len(),
+        sample_rate as u32,
+        duration_sec,
+        n_windows,
+        window_size,
+        n_pulses,
+        passes.len(),
     )?;
     w.write_all(
         b"<p class=\"help\">Scroll: zoom time &nbsp;|&nbsp; \
@@ -663,7 +742,11 @@ pub fn write_html_to<W: std::io::Write>(
         } else {
             format!("{}", pass.n_pulses)
         };
-        let dubious_label = if pass.n_pulses == 1 { "nested" } else { "overlapping" };
+        let dubious_label = if pass.n_pulses == 1 {
+            "nested"
+        } else {
+            "overlapping"
+        };
         let species_cell = if pass.dubious {
             format!(
                 "{} <span style=\"color:#555;font-size:10px\">({}&nbsp;&#x2753;)</span>",
@@ -673,11 +756,18 @@ pub fn write_html_to<W: std::io::Write>(
             pass.species.to_string()
         };
         // Colour the confidence badge: green ≥ 0.75, amber ≥ 0.40, red below.
-        let conf_color = if conf >= 0.75 { "#3a3" } else if conf >= 0.40 { "#963" } else { "#933" };
+        let conf_color = if conf >= 0.75 {
+            "#3a3"
+        } else if conf >= 0.40 {
+            "#963"
+        } else {
+            "#933"
+        };
         let conf_cell = format!(
             "<span style=\"display:inline-block;padding:1px 5px;border-radius:2px;\
              font-size:10px;background:{};color:#eee\">{:.0}%</span>",
-            conf_color, conf * 100.0
+            conf_color,
+            conf * 100.0
         );
         writeln!(
             w,
@@ -691,10 +781,12 @@ pub fn write_html_to<W: std::io::Write>(
              <td>{}</td>\
              <td>{}</td>\
              </tr>",
-            pass.start_sec, pass.end_sec,
+            pass.start_sec,
+            pass.end_sec,
             row_class,
             i + 1,
-            pass.start_sec, pass.end_sec,
+            pass.start_sec,
+            pass.end_sec,
             duration_ms,
             pulses_cell,
             pass.mean_peak_hz / 1000.0,
@@ -717,7 +809,9 @@ pub fn write_html_to<W: std::io::Write>(
     // Detected array (compact 0/1)
     w.write_all(b"D.det=[")?;
     for (i, &d) in detected.iter().enumerate() {
-        if i > 0 { w.write_all(b",")?; }
+        if i > 0 {
+            w.write_all(b",")?;
+        }
         w.write_all(if d { b"1" } else { b"0" })?;
     }
     w.write_all(b"];\n")?;
@@ -725,7 +819,9 @@ pub fn write_html_to<W: std::io::Write>(
     // Calls array — start/end windows, used only for boundary lines in the spectrogram
     w.write_all(b"D.calls=[")?;
     for (i, call) in calls.iter().enumerate() {
-        if i > 0 { w.write_all(b",")?; }
+        if i > 0 {
+            w.write_all(b",")?;
+        }
         write!(w, r#"{{"s":{},"e":{}}}"#, call.start_win, call.end_win)?;
     }
     w.write_all(b"];\n")?;
@@ -734,11 +830,18 @@ pub fn write_html_to<W: std::io::Write>(
     // used for mouse-over labels (dubious passes are skipped in the tooltip).
     w.write_all(b"D.passes=[")?;
     for (i, pass) in passes.iter().enumerate() {
-        if i > 0 { w.write_all(b",")?; }
-        write!(w, r#"{{"t0":{:.3},"t1":{:.3},"co":{},"sp":{},"dub":{}}}"#,
-            pass.start_sec, pass.end_sec,
-            js_str(pass.code), js_str(pass.species),
-            if pass.dubious { "true" } else { "false" })?;
+        if i > 0 {
+            w.write_all(b",")?;
+        }
+        write!(
+            w,
+            r#"{{"t0":{:.3},"t1":{:.3},"co":{},"sp":{},"dub":{}}}"#,
+            pass.start_sec,
+            pass.end_sec,
+            js_str(pass.code),
+            js_str(pass.species),
+            if pass.dubious { "true" } else { "false" }
+        )?;
     }
     w.write_all(b"];\n")?;
 
@@ -771,8 +874,19 @@ pub fn write_html(
     let out_path = format!("{}_spectrogram.html", stem);
     let file = std::fs::File::create(&out_path)?;
     let mut w = std::io::BufWriter::new(file);
-    write_html_to(&mut w, stem, sample_rate, window_size, n_windows, freq_bins,
-                  hz_per_bin, spec_bytes, detected, calls, passes)?;
+    write_html_to(
+        &mut w,
+        stem,
+        sample_rate,
+        window_size,
+        n_windows,
+        freq_bins,
+        hz_per_bin,
+        spec_bytes,
+        detected,
+        calls,
+        passes,
+    )?;
     println!("Interactive HTML saved to:  {}", out_path);
     Ok(())
 }
@@ -867,30 +981,45 @@ mod tests {
 
     #[test]
     fn html_escape_special_chars() {
-        assert_eq!(html_escape("<b>\"foo\" & 'bar'</b>"), "&lt;b&gt;&quot;foo&quot; &amp; 'bar'&lt;/b&gt;");
+        assert_eq!(
+            html_escape("<b>\"foo\" & 'bar'</b>"),
+            "&lt;b&gt;&quot;foo&quot; &amp; 'bar'&lt;/b&gt;"
+        );
     }
 
     // ── flag_feeding_buzzes ───────────────────────────────────────────────────
 
     fn make_pass(
-        code: &'static str, species: &'static str,
-        start: f32, end: f32,
-        peak_hz: f32, n_pulses: usize,
+        code: &'static str,
+        species: &'static str,
+        start: f32,
+        end: f32,
+        peak_hz: f32,
+        n_pulses: usize,
     ) -> PassInfo {
         PassInfo {
-            species, code,
-            start_sec: start, end_sec: end,
-            n_pulses, n_extra: 0,
-            mean_peak_hz: peak_hz, peak_hz_std: 0.0,
+            species,
+            code,
+            start_sec: start,
+            end_sec: end,
+            n_pulses,
+            n_extra: 0,
+            mean_peak_hz: peak_hz,
+            peak_hz_std: 0.0,
             mean_freq_low_hz: peak_hz - 15_000.0,
             mean_freq_high_hz: peak_hz + 15_000.0,
             mean_bandwidth_hz: 10_000.0,
-            mean_cf_tail_ratio: 0.5, mean_rep_rate: 10.0,
+            mean_cf_tail_ratio: 0.5,
+            mean_rep_rate: 10.0,
             is_cf: false,
-            mean_call_duration_ms: 5.0, call_duration_ms_std: 0.0,
-            mean_start_hz: peak_hz + 10_000.0, mean_end_hz: peak_hz,
-            mean_energy_db: -40.0, peak_energy_db: -35.0,
-            notes: "test", dubious: false,
+            mean_call_duration_ms: 5.0,
+            call_duration_ms_std: 0.0,
+            mean_start_hz: peak_hz + 10_000.0,
+            mean_end_hz: peak_hz,
+            mean_energy_db: -40.0,
+            peak_energy_db: -35.0,
+            notes: "test",
+            dubious: false,
         }
     }
 
@@ -900,14 +1029,17 @@ mod tests {
         // Soprano pip again: buzz should become PIPPYG dubious.
         let mut passes = vec![
             make_pass("PIPPYG", "Soprano Pipistrelle", 0.0, 1.0, 53_000.0, 10),
-            make_pass("MYOSPP", "Myotis sp.",          1.2, 1.6, 53_000.0, 18),
+            make_pass("MYOSPP", "Myotis sp.", 1.2, 1.6, 53_000.0, 18),
             make_pass("PIPPYG", "Soprano Pipistrelle", 2.0, 3.0, 53_000.0, 10),
         ];
         flag_feeding_buzzes(&mut passes);
 
-        assert!(passes[1].dubious,  "buzz pass should be dubious");
-        assert_eq!(passes[1].code,    "PIPPYG", "code should be inherited");
-        assert_eq!(passes[1].species, "Soprano Pipistrelle", "species should be inherited");
+        assert!(passes[1].dubious, "buzz pass should be dubious");
+        assert_eq!(passes[1].code, "PIPPYG", "code should be inherited");
+        assert_eq!(
+            passes[1].species, "Soprano Pipistrelle",
+            "species should be inherited"
+        );
         assert!(passes[1].notes.contains("inferred"), "{}", passes[1].notes);
         // Flanking passes must be unaffected.
         assert!(!passes[0].dubious);
@@ -917,9 +1049,7 @@ mod tests {
     #[test]
     fn buzz_without_context_gets_uncertain_note() {
         // 15 pulses in 0.4 s = 37.5/s → buzz with no neighbours.
-        let mut passes = vec![
-            make_pass("MYOSPP", "Myotis sp.", 0.0, 0.4, 53_000.0, 15),
-        ];
+        let mut passes = vec![make_pass("MYOSPP", "Myotis sp.", 0.0, 0.4, 53_000.0, 15)];
         flag_feeding_buzzes(&mut passes);
 
         assert!(passes[0].dubious);
@@ -927,10 +1057,30 @@ mod tests {
     }
 
     #[test]
+    fn short_pass_not_flagged_as_buzz() {
+        // 1 pulse in 4 ms = 250/s but only 1 pulse → must NOT be flagged.
+        // Covers Noctule single-call passes and chip-chop pairs.
+        let mut passes = vec![
+            make_pass("NYCNOC", "Noctule", 11.403, 11.407, 22_000.0, 1),
+            make_pass("NYCNOC", "Noctule", 10.236, 10.289, 34_000.0, 2),
+        ];
+        flag_feeding_buzzes(&mut passes);
+
+        assert!(
+            !passes[0].dubious,
+            "single-pulse pass should not be flagged as buzz"
+        );
+        assert!(
+            !passes[1].dubious,
+            "two-pulse chip-chop pass should not be flagged as buzz"
+        );
+    }
+
+    #[test]
     fn buzz_does_not_inherit_different_frequency_species() {
         // A Noctule pass (peak 22 kHz) should not lend its label to a Soprano Pip buzz.
         let mut passes = vec![
-            make_pass("NYCNOC", "Noctule",   0.0, 1.0, 22_000.0, 4),
+            make_pass("NYCNOC", "Noctule", 0.0, 1.0, 22_000.0, 4),
             make_pass("MYOSPP", "Myotis sp.", 1.2, 1.6, 53_000.0, 18),
         ];
         flag_feeding_buzzes(&mut passes);

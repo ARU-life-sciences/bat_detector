@@ -6,3 +6,4 @@
 /bat-review/node_modules
 bat-review/src-tauri/target
 /training_data
+/eval/recordings

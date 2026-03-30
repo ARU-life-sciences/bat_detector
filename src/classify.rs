@@ -43,12 +43,72 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'stat
     if has_cf_tail {
         // ── Step 4: Pipistrelles (peak > 35 kHz) vs big bats ─────────────────
         if f.peak_hz > 35_000.0 {
+            // ── Step 4a: Daubenton's intercept ────────────────────────────────
+            // Distant Daubenton's: atmospheric absorption attenuates the
+            // high-frequency FM sweep, leaving only the CF-like terminal portion.
+            // The surviving call has elevated cf_tail_ratio and mean_end_hz ≈ peak_hz
+            // (sweep_ends_near_peak passes), sending it here.  A genuine pipistrelle
+            // sweeps from well above the peak; the FM portion above the peak is
+            // ≥ 12 kHz even for Nathusius'.  Daubenton's at distance shows a
+            // compressed sweep height (freq_high − peak < 12 kHz) because only
+            // the low-frequency terminal portion survives atmospheric attenuation.
+            // mean_end_hz < 45 kHz provides a second guard.
+            // Feeding-buzz calls are excluded (rep_rate ≥ 25/s): buzz calls are
+            // naturally short and compressed and would mimic this pattern for any bat.
+            // (Close-up Daubenton's with full FM sweep has sweep_ends_near_peak = false
+            // and never reaches this block.)
+            if f.freq_high_hz - f.peak_hz < 12_000.0
+                && f.mean_end_hz > 0.0
+                && f.mean_end_hz < 45_000.0
+                && f.rep_rate < 25.0
+            {
+                return (
+                    "MYODAU",
+                    "Daubenton's Bat (Myotis daubentonii)",
+                    "FM+CF path: FM sweep above peak < 12 kHz and terminal freq < 45 kHz — \
+                     atmospheric attenuation at distance removes the high-frequency sweep; \
+                     classified as Daubenton's rather than pipistrelle",
+                );
+            }
+
+            // ── Step 4b: Leisler's rescue — elevated-frequency calls ─────────
+            // Leisler's regularly peaks above 35 kHz (up to ~37 kHz), which
+            // routes it here.  Its sweep always reaches below 26 kHz; Nathusius'
+            // sweep floor stays at or above ~28 kHz.  Checking freq_low before
+            // the PIPNAT gate catches Leisler's that would otherwise be labelled
+            // Nathusius'.  Only applied when peak < 40 kHz to avoid intercepting
+            // genuine pips at the top of the Nathusius' range.
+            if f.peak_hz < 40_000.0 && f.freq_low_hz < 26_000.0 {
+                return if f.freq_low_hz <= 21_000.0 {
+                    (
+                        "NYCNOC",
+                        "Noctule (Nyctalus noctula)",
+                        "Peak in Nathusius' range but floor ≤21 kHz — identified via sweep depth",
+                    )
+                } else if f.freq_low_hz <= 24_000.0 {
+                    (
+                        "NYCSPP",
+                        "Noctule or Leisler's Bat (Nyctalus sp.)",
+                        "Peak in Nathusius' range but floor 21–24 kHz — ambiguous; \
+                         check habitat and flight height",
+                    )
+                } else {
+                    (
+                        "NYCLEI",
+                        "Leisler's Bat (Nyctalus leisleri)",
+                        "Peak in Nathusius' range (>35 kHz) but sweep floor <26 kHz — \
+                         Nathusius' floor stays ≥28 kHz; Leisler's regularly peaks here",
+                    )
+                };
+            }
+
             // ── Step 5: Nathusius' vs Common / Soprano ────────────────────────
+            // freq_low ≥ 26 kHz is implicit here (Leisler's is caught above).
             if f.peak_hz < 40_000.0 || f.rep_rate < 8.0 {
                 return (
                     "PIPNAT",
                     "Nathusius' Pipistrelle (Pipistrellus nathusii)",
-                    "Peak <40 kHz; slow rep ~6-7/s; FM+CF call",
+                    "Peak <40 kHz; slow rep ~6-7/s; FM+CF call; sweep floor ≥26 kHz",
                 );
             }
             // ── Step 6: Soprano vs Common ─────────────────────────────────────
@@ -83,8 +143,12 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'stat
         // Leisler's (peak up to 36.6 kHz) from reaching the Noctule/Leisler's path.
         // The peak_hz >= 25 kHz guard prevents Noctule calls with a noisy narrow
         // sweep from being misidentified as Serotine.
+        // Serotine doesn't sweep below 22 kHz; Noctule does (≤21 kHz).
+        // Guard freq_low to prevent Noctule calls in a mixed group (where territory
+        // capping limits freq_high to ≤38 kHz) from being caught here first.
         if f.freq_high_hz < 38_000.0 && f.peak_hz >= 25_000.0
             && f.mean_call_duration_ms < 13.0
+            && f.freq_low_hz > 21_000.0
         {
             return (
                 "EPTSER",
@@ -99,9 +163,13 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'stat
         //   Leisler's→ floor  > 24 kHz (chop deepest above 24 kHz)
         //   21–24 kHz zone is explicitly ambiguous per NBMP guidance.
         //
-        // Rep-rate guard (≤ 10/s) stays on the Noctule check to exclude
-        // spectral noise events that happen to have a low frequency floor.
-        if f.freq_low_hz <= 21_000.0 && f.rep_rate <= 10.0 {
+        // freq_low_hz ≤ 21 kHz is already highly specific — nothing other than
+        // Noctule (and occasionally very distant Leisler's) produces a confirmed
+        // FM+CF call with energy reaching below 21 kHz.  The old rep_rate guard
+        // was intended to exclude noise but also suppressed genuine Noctules
+        // detected alongside a fast-calling Pipistrelle (whose pulses inflated
+        // the measured rep_rate for the co-occurring Noctule peak).
+        if f.freq_low_hz <= 21_000.0 {
             return (
                 "NYCNOC",
                 "Noctule (Nyctalus noctula)",
@@ -132,8 +200,15 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'stat
     // ── Steps 9–13: Pure FM — Myotis, Barbastelle, long-eared ────────────────
 
     // Step 9: Barbastelle — narrow range 30–45 kHz, peak 32–34 kHz
+    // freq_low > 25 kHz guards against a secondary peak whose freq_low bleeds
+    // into a co-occurring Noctule's territory (freq_low search uses the
+    // recording minimum floor, not the peak's left-bound territory).
+    // Barbastelle does not sweep below ~28 kHz in British populations.
     let freq_range = f.freq_high_hz - f.freq_low_hz;
-    if (31_000.0..=36_000.0).contains(&f.peak_hz) && freq_range < 18_000.0 {
+    if (31_000.0..=36_000.0).contains(&f.peak_hz)
+        && freq_range < 18_000.0
+        && f.freq_low_hz > 25_000.0
+    {
         return (
             "BARBAR",
             "Barbastelle (Barbastella barbastellus)",
@@ -157,6 +232,18 @@ pub fn classify_british(f: &CallFeatures) -> (&'static str, &'static str, &'stat
                 "Audible above 90 kHz but not below 30 kHz; medium rep 9-11/s",
             )
         };
+    }
+
+    // Rescue: Noctule (or Leisler's) where freq_high is territory-capped by a
+    // co-occurring louder species.  No long-eared bat sweeps below 21 kHz, so
+    // freq_low ≤ 21 kHz with a low peak unambiguously points to Noctule/Leisler's.
+    if f.freq_low_hz <= 21_000.0 && f.peak_hz <= 35_000.0 {
+        return (
+            "NYCNOC",
+            "Noctule (Nyctalus noctula)",
+            "Floor ≤21 kHz; peak ≤35 kHz; freq_high may be territory-capped \
+             in co-occurrence recording — identified via low-frequency floor",
+        );
     }
 
     // Step 11 (part 2): inaudible above ~65 kHz → long-eared bats
@@ -313,10 +400,32 @@ mod tests {
 
     #[test]
     fn nathusius_low_peak() {
-        // Peak < 40 kHz → Nathusius'
+        // Peak < 40 kHz, freq_low 28 kHz (above Leisler's floor) → Nathusius'
         let f = fm_cf(38_000.0, 28_000.0, 52_000.0, 7.0);
         let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Nathusius"), "{}", sp);
+    }
+
+    #[test]
+    fn leisleri_elevated_peak() {
+        // Leisler's peaking above 35 kHz (common): must NOT be labelled Nathusius'.
+        // Its sweep floor at 24 kHz (< 26 kHz) distinguishes it.
+        let f = fm_cf(36_000.0, 24_000.0, 52_000.0, 6.0);
+        let (code, sp, _) = classify_british(&f);
+        assert_ne!(code, "PIPNAT", "Leisler's at 36 kHz must not be Nathusius'; got {sp}");
+        assert!(
+            code == "NYCLEI" || code == "NYCSPP",
+            "Expected NYCLEI or NYCSPP, got {code} ({sp})"
+        );
+    }
+
+    #[test]
+    fn nathusius_not_confused_with_leisleri() {
+        // Nathusius' with freq_low 29 kHz (well above the 26 kHz guard) must not
+        // be diverted to the Leisler's rescue path.
+        let f = fm_cf(38_000.0, 29_000.0, 58_000.0, 7.0);
+        let (code, sp, _) = classify_british(&f);
+        assert_eq!(code, "PIPNAT", "Nathusius' with high floor must not be Leisler's; got {sp}");
     }
 
     #[test]
@@ -341,6 +450,17 @@ mod tests {
         let f = fm_cf(20_000.0, 18_000.0, 52_000.0, 4.0);
         let (_, sp, _) = classify_british(&f);
         assert!(sp.contains("Noctule"), "{}", sp);
+    }
+
+    #[test]
+    fn noctule_with_pip_contaminated_rep_rate() {
+        // Noctule co-occurring with a Pipistrelle: the rep_rate measured for the
+        // Noctule peak is inflated by the pip's rapid pulses in the same call group.
+        // Floor ≤ 21 kHz should be sufficient to identify it regardless.
+        let mut f = fm_cf(20_000.0, 18_000.0, 52_000.0, 4.0);
+        f.rep_rate = 15.0; // inflated by co-occurring pip
+        let (code, sp, _) = classify_british(&f);
+        assert_eq!(code, "NYCNOC", "{}", sp);
     }
 
     #[test]
@@ -386,6 +506,16 @@ mod tests {
     }
 
     #[test]
+    fn noctule_territory_capped_cooccurrence() {
+        // Pass 2 scenario from 20260322_195000.WAV: Noctule peak at 34 kHz,
+        // freq_high capped at ~45 kHz by territory boundary (midpoint with Soprano pip).
+        // Without the rescue check this was classified as PLEAUS.
+        let f = pure_fm(34_000.0, 18_000.0, 45_000.0, 6.0);
+        let (code, sp, _) = classify_british(&f);
+        assert_eq!(code, "NYCNOC", "{}", sp);
+    }
+
+    #[test]
     fn brown_long_eared() {
         // freq_high < 65 kHz, peak 45–55 kHz
         let f = pure_fm(50_000.0, 35_000.0, 62_000.0, 12.0);
@@ -422,6 +552,20 @@ mod tests {
         let (code, _, _) = classify_british(&f);
         assert_ne!(code, "PIPPIP", "Daubenton's must not be called Common Pip");
         assert_ne!(code, "PIPPYG", "Daubenton's must not be called Soprano Pip");
+    }
+
+    #[test]
+    fn daubenton_distant_intercept() {
+        // Distant Daubenton's: atmospheric attenuation removes the high-frequency
+        // FM sweep.  freq_high is only ~47 kHz (barely 7 kHz above the 40 kHz
+        // peak), cf_tail_ratio is elevated and sweep_ends_near_peak passes.
+        // The FM+CF pipistrelle path must NOT return PIPNAT — the compressed sweep
+        // height (< 12 kHz) combined with mean_end_hz < 45 kHz catches it as MYODAU.
+        let mut f = pure_fm(40_000.0, 28_000.0, 47_000.0, 7.0);
+        f.cf_tail_ratio = 0.35;
+        f.mean_end_hz   = 40_000.0; // ends at spectral peak (ratio 1.0 → near-peak passes)
+        let (code, sp, _) = classify_british(&f);
+        assert_eq!(code, "MYODAU", "Distant Daubenton's must not be called PIPNAT; got {sp}");
     }
 
     #[test]

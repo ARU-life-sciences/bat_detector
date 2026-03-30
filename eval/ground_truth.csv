@@ -1,0 +1,29 @@
+# Bat detector ground truth annotations.
+#
+# filename       – WAV basename (relative to eval/recordings/)
+# expected_code  – 6-letter species code, or NONE if no bats expected
+# start_s        – optional: earliest time the species should be detected (leave blank = anywhere)
+# end_s          – optional: latest time the species should be detected (leave blank = anywhere)
+# notes          – free text (not parsed)
+#
+# One row per species annotation.  Multi-species files get multiple rows.
+# Codes: PIPPIP PIPPYG PIPNAT PIPSPP NYCNOC NYCLEI NYCSPP EPTSER
+#        BARBAR MYODAU MYONAT MYOBEC MYOSPP PLEAUR PLEAUS PLESPP
+#        RHIFER RHIHIP RHISPP  NONE (no bats expected)
+#
+filename,expected_code,start_s,end_s,notes
+20260322_195000.WAV,PIPPYG,2.8,11.5,NA
+20260322_195000.WAV,NYCSPP,7.0,12.8,NA
+20260322_195000.WAV,PIPPYG,45.0,50.0,NA
+20260322_194900.WAV,PIPPIP,17.0,23.0,NA
+20260322_194900.WAV,PIPPYG,24.0,29.0,NA
+20260322_194900.WAV,PIPPIP,2.8,4.5,NA
+20260322_194700.WAV,PIPPIP,8.5,13.6,NA
+20260322_194700.WAV,PIPPIP,19.7,23.3,NA
+20260322_194700.WAV,PIPPYG,25.0,30.0,NA
+20260322_194700.WAV,NYCSPP,29.2,31.6,NA
+20260322_194700.WAV,PIPPYG,37.0,44.0,NA
+20260322_194700.WAV,PIPPIP,38.0,40.1,NA
+20260322_194700.WAV,NYCSPP,43.0,47.1,NA
+20260322_191200.WAV,PIPPYG,0.0,11.3,NA
+20260322_191200.WAV,PIPNAT,2.8,12.4,NA
