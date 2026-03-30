@@ -73,6 +73,6 @@ jobs:
           projectPath: bat-review
           tagName: ${{ github.ref_name }}
           releaseName: Bat Review ${{ github.ref_name }}
-          releaseDraft: true        # review before publishing
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
